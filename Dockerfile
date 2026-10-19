@@ -55,7 +55,7 @@ RUN ./venv/bin/pip install --no-input \
 # start.sh next to ComfyUI and reading ComfyUI's output/vathography/ depth
 # maps. Its own venv, so its numpy/OpenCV/OpenEXR pins can't touch ComfyUI's.
 # vathopy-src/ comes from ./sync-vathopy.sh (run it before building); its
-# VATHOPY_COMMIT records which vathography commit it is.
+# VATHOPY_COMMIT records which vathopy commit it is.
 COPY vathopy-src/ /opt/vathopy-src/
 RUN python3 -m venv /opt/vathopy \
     && /opt/vathopy/bin/pip install --no-input --prefer-binary /opt/vathopy-src \

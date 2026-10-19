@@ -87,15 +87,15 @@ rsync -a --ignore-existing /opt/vathography-workflows/ "$VOLUME_ROOT/user/defaul
 flock -u 9
 
 # vathopy GUI on 8770 (VATHOPY_GUI=off to skip): depth maps from ComfyUI's
-# output/vathography/, saves to favorites/ on the volume. Set VATHOPY_GUI_AUTH
+# output/vathography/, saves to favorites/, your palettes from palettes/ on the volume. Set VATHOPY_GUI_AUTH
 # (user:password) on the pod: RunPod's proxy URL is public. Restarted if it exits.
 if [[ "${VATHOPY_GUI:-on}" != "off" && -x /opt/vathopy/bin/vathopy ]]; then
-  mkdir -p "$VOLUME_ROOT/output/vathography" "$VOLUME_ROOT/favorites"
+  mkdir -p "$VOLUME_ROOT/output/vathography" "$VOLUME_ROOT/favorites" "$VOLUME_ROOT/palettes"
   [[ -n "${VATHOPY_GUI_AUTH:-}" ]] || echo "[boot] WARNING: VATHOPY_GUI_AUTH not set; the vathopy GUI has no password"
   echo "[boot] starting vathopy gui on 0.0.0.0:8770 (vathopy $(cat /opt/vathopy/VATHOPY_COMMIT 2>/dev/null))"
   (
     while true; do
-      /opt/vathopy/bin/vathopy gui --host 0.0.0.0 --port 8770 \
+      /opt/vathopy/bin/vathopy --palettes "$VOLUME_ROOT/palettes" gui --host 0.0.0.0 --port 8770 \
         --depth-dir "$VOLUME_ROOT/output/vathography" --favourites "$VOLUME_ROOT/favorites" \
         >> /tmp/vathopy-gui.log 2>&1
       echo "[vathopy] gui exited ($?), restarting in 5s" >> /tmp/vathopy-gui.log

@@ -99,6 +99,15 @@ The image also runs the `vathopy` web GUI (sliders, palettes, cycles, contour li
 - **URL:** `https://<pod-id>-8770.proxy.runpod.net`, with a password: RunPod's proxy URLs are public.
 - **Input:** the depth maps in ComfyUI's output folder, `/workspace/output/vathography/`, so anything the workflows or `batch.sh` produce shows up in its list (depth EXRs only).
 - **Saves:** go to `/workspace/favorites/` on the volume (PNG + `looks/<name>.json`). The page links each save for download. They're also reachable through S3 under `favorites/`.
+- **Your palettes:** `/workspace/palettes/` on the volume (created at boot), the GUI's palette folder: images, `.json` or `.gpl` files, the same as on a workstation (see `vathopy`'s README, "Your own palettes"). The GUI re-reads it on every page load, so upload, then reload the page. Check them locally first, then upload each through the volume's S3 gateway (the profile, endpoint and region flags as in "Getting depth maps back" below):
+
+  ```bash
+  vathopy check-palettes ~/Pictures/vathography/palettes      # every file OK, or fix/remove it first
+  aws s3api put-object --bucket <volume-id> --key palettes/dusk.png --body ~/Pictures/vathography/palettes/dusk.png \
+    --profile runpods3 --endpoint-url https://s3api-<dc>.runpod.io --region <dc>
+  ```
+
+  The pod's GUI runs the same checks and skips anything that fails (its log, `/tmp/vathopy-gui.log`, says why). Looks saved with one of these palettes need it in the folder wherever they're rendered again.
 - **Password:** `start.sh` passes `VATHOPY_GUI_AUTH` (`user:password`) from the pod's environment. Keep it in a local file outside the repo (mode 600) and pass it on every `--update` (see `build.md`). Without it the GUI starts but logs a warning.
 - **Logs and control:** on the pod, `/tmp/vathopy-gui.log`. It's restarted if it exits. Set `VATHOPY_GUI=off` to not start it.
 - **Building:** it has its own venv (`/opt/vathopy`), so its numpy/OpenCV/OpenEXR can't affect ComfyUI's. Run `./sync-vathopy.sh` before `docker build` (see `build.md`). The image records the source commit in `/opt/vathopy/VATHOPY_COMMIT`.
