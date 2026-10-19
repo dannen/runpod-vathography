@@ -3,7 +3,21 @@
 Seed a new network volume from an already-seeded one, RunPod to RunPod, without
 the models passing through this machine.
 
-A throwaway pod (a 2 vCPU CPU pod by default, ~$0.06/hr; or the cheapest GPU pod
+Same datacenter (--from and --to in one DC): no pod. Each file is copied
+server-side with S3 `copy-object` (~110 MB/s on US-MO-1). Cloudflare gives up on
+a long call (HTTP 524 after ~2 min, e.g. the 20.5GB backbone) but the copy
+carries on, so the script then waits for the object to reach its full size.
+Files already there at the right size aren't copied again. Then each file is
+checked against Hugging Face's SHA-256 (--verify, default `full`): a file with a
+local copy in ./models/ (from populate-volume.sh) is checked without a download,
+by the local copy's SHA-256 and the target's ETag (a server-side copy's ETag is
+the content's MD5) against the local MD5; any other file is downloaded once and
+hashed. `--verify size` only compares sizes with the source. A file that fails
+is deleted from the target, so a rerun copies it again.
+
+  ./copy-volume.py --from US-MO-1:<old-volume-id> --to US-MO-1:<new-volume-id>
+
+Different datacenters (or --pod): a throwaway pod (a 2 vCPU CPU pod by default, ~$0.06/hr; or the cheapest GPU pod
 with --gpu, for datacenters with no CPU supply) starts with the TARGET volume at
 /workspace and runs a short job: `get-object` each file in models.txt from the
 SOURCE volume's S3 gateway into /workspace/models/, and check it against the
@@ -29,6 +43,7 @@ populate-volume.sh). Python 3 stdlib + the aws CLI.
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -208,10 +223,132 @@ def follow(args, ak, sk, run):
             time.sleep(30)
 
 
+# ── Same datacenter: server-side copy ────────────────────────────────────────
+
+def aws(dc, args, env, timeout=120):
+    dc = dc.lower()
+    try:
+        return subprocess.run(["aws", "--endpoint-url", f"https://s3api-{dc}.runpod.io", "--region", dc,
+                               "--cli-read-timeout", str(timeout)] + args,
+                              env=env, capture_output=True, text=True, timeout=timeout + 30)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 1, "", f"timed out after {timeout}s")
+
+
+def listing(dc, vol, env, prefix="models/"):
+    """{key: (size, etag)}; the gateway can be slow to list, so it's retried."""
+    out, token = {}, None
+    while True:
+        cmd = ["s3api", "list-objects-v2", "--bucket", vol, "--prefix", prefix, "--output", "json"]
+        if token:
+            cmd += ["--continuation-token", token]
+        for attempt in range(4):
+            r = aws(dc, cmd, env, timeout=300)
+            if r.returncode == 0:
+                break
+            time.sleep(10)
+        else:
+            sys.exit(f"ERROR: can't list {vol}: {r.stderr.strip()[:200]}")
+        page = json.loads(r.stdout or "{}")
+        for o in page.get("Contents", []):
+            out[o["Key"]] = (o["Size"], o.get("ETag", "").strip('"'))
+        token = page.get("NextContinuationToken")
+        if not token:
+            return out
+
+
+def server_copy(args, files, env):
+    """copy-object each file that isn't on the target at the source's size. True if all landed."""
+    src, dst = listing(args.src_dc, args.src_vol, env), listing(args.to_dc, args.to_vol, env)
+    ok = True
+    for key, _ in files:
+        if key not in src:
+            print(f"  MISSING on the source: {key}")
+            ok = False
+            continue
+        size = src[key][0]
+        if dst.get(key, (None,))[0] == size:
+            print(f"  have {key}")
+            continue
+        t0 = time.time()
+        r = aws(args.to_dc, ["s3api", "copy-object", "--copy-source", f"{args.src_vol}/{key}",
+                             "--bucket", args.to_vol, "--key", key], env, timeout=900)
+        if r.returncode != 0:
+            # Typically Cloudflare's 524 on a big file: the gateway finishes the copy anyway.
+            print(f"  {key}: copy call failed ({(r.stderr.strip().splitlines() or ['?'])[-1][:120]}); waiting for it to land")
+            deadline = time.time() + 1800
+            while time.time() < deadline and listing(args.to_dc, args.to_vol, env, prefix=key).get(key, (None,))[0] != size:
+                time.sleep(30)
+            if listing(args.to_dc, args.to_vol, env, prefix=key).get(key, (None,))[0] != size:
+                print(f"  FAILED {key}: not at full size after 30 min")
+                ok = False
+                continue
+        dt = max(time.time() - t0, 1)
+        print(f"  copied {key} ({size / 1e9:.2f} GB in {dt:.0f} s, {size / dt / 1e6:.0f} MB/s)")
+    return ok
+
+
+def file_hashes(path):
+    sha, md5 = hashlib.sha256(), hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8 << 20), b""):
+            sha.update(chunk)
+            md5.update(chunk)
+    return sha.hexdigest(), md5.hexdigest()
+
+
+def verify(args, files, env):
+    """Check every file on the target; delete any that fail. True if all pass."""
+    src, dst = listing(args.src_dc, args.src_vol, env), listing(args.to_dc, args.to_vol, env)
+    ok = True
+    for key, want in files:
+        size, etag = dst.get(key, (None, ""))
+        why = None
+        if size is None or size != src.get(key, (None,))[0]:
+            why = f"size {size} (source {src.get(key, (None,))[0]})"
+        elif args.verify == "full":
+            local = HERE / key
+            if local.is_file() and local.stat().st_size == size:
+                sha, md5 = file_hashes(local)
+                if sha != want:
+                    why = None
+                    print(f"  (local copy of {key} doesn't match Hugging Face; downloading instead)")
+                    local = None
+                elif md5 != etag:
+                    why = f"ETag {etag} != local MD5 {md5}"
+                else:
+                    print(f"  OK {key} (ETag = MD5 of the local copy, whose SHA-256 = Hugging Face's)")
+                    continue
+            else:
+                local = None
+            if local is None and why is None:
+                with tempfile.TemporaryDirectory() as tmp:
+                    dest = Path(tmp) / "f"
+                    r = aws(args.to_dc, ["s3api", "get-object", "--bucket", args.to_vol, "--key", key, str(dest)],
+                            env, timeout=1800)
+                    if r.returncode != 0:
+                        why = f"download failed: {r.stderr.strip()[:120]}"
+                    elif file_hashes(dest)[0] != want:
+                        why = "SHA-256 != Hugging Face's"
+                    else:
+                        print(f"  OK {key} (downloaded; SHA-256 = Hugging Face's)")
+                        continue
+        else:
+            print(f"  OK {key} (size)")
+            continue
+        print(f"  FAILED {key}: {why}; deleting it from the target")
+        aws(args.to_dc, ["s3api", "delete-object", "--bucket", args.to_vol, "--key", key], env)
+        ok = False
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser(description="Seed a network volume from another one, RunPod to RunPod.")
     ap.add_argument("--from", dest="src", required=True, metavar="DC:VOLUME", help="the seeded volume, e.g. US-MO-1:abc123")
     ap.add_argument("--to", dest="dst", required=True, metavar="DC:VOLUME", help="the volume to seed")
+    ap.add_argument("--pod", action="store_true", help="use a pod even when both volumes are in one datacenter")
+    ap.add_argument("--verify", choices=["full", "size"], default="full",
+                    help="same-datacenter copies: check SHA-256s (default; downloads files with no local copy) or only sizes")
     ap.add_argument("--cpu", metavar="INSTANCE", help=f"CPU instance id (<flavor>-<vcpu>-<memGB>); default: try {', '.join(CPU_INSTANCES)}")
     ap.add_argument("--gpu", metavar="TYPE", help='use a GPU pod instead, e.g. "NVIDIA RTX A5000" (for datacenters with no CPU supply)')
     ap.add_argument("--image", default="python:3.12-slim", help="pod image (needs bash, pip, sha256sum, base64)")
@@ -226,9 +363,22 @@ def main():
     if args.cpu and args.gpu:
         ap.error("--cpu and --gpu are mutually exclusive")
 
-    key, (ak, sk) = runpod_key(), s3_creds()
+    if args.src_vol == args.to_vol:
+        ap.error("--from and --to are the same volume")
+
+    ak, sk = s3_creds()
     files = manifest()
     print(f"{len(files)} files from {args.src} to {args.dst} (SHA-256 from Hugging Face)")
+    if args.src_dc.upper() == args.to_dc.upper() and not (args.pod or args.cpu or args.gpu):
+        env = {**os.environ, "AWS_ACCESS_KEY_ID": ak, "AWS_SECRET_ACCESS_KEY": sk}
+        print("Same datacenter: server-side copy-object, no pod.")
+        copied = server_copy(args, files, env)
+        print(f"Verifying ({args.verify}):")
+        ok = verify(args, files, env) and copied
+        print("ALL OK" if ok else "FAILED: rerun to copy the failed files again")
+        sys.exit(0 if ok else 1)
+
+    key = runpod_key()
     run = f"run-{int(time.time())}"
     job = (POD_JOB.replace("__RUN__", run).replace("__SRC_DC_LC__", args.src_dc.lower()).replace("__SRC_VOL__", args.src_vol)
            .replace("__LIST__", "\n".join(f"{k} {s}" for k, s in files)))

@@ -14,7 +14,7 @@ Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-o
 | `start.sh` | Entrypoint: wait for the volume, symlink dirs onto it, download missing models, seed workflows, run ComfyUI |
 | `models.txt` | Model manifest (subdir + URL). **The only list of models.** `start.sh` and `populate-volume.sh` both read it |
 | `populate-volume.sh` | Seeds the volume from this machine through RunPod's S3 gateway. `--dry-run` shows the plan |
-| `copy-volume.py` | Seeds a new volume from an already-seeded one, RunPod to RunPod, on a throwaway CPU (or GPU) pod; each file checked against Hugging Face's SHA-256 |
+| `copy-volume.py` | Seeds a new volume from an already-seeded one, RunPod to RunPod: server-side S3 copy in the same datacenter, a throwaway CPU (or GPU) pod across datacenters; each file checked against Hugging Face's SHA-256 |
 | `workflows/image_marigold_v2_*.json` | The three official Comfy-Org templates, unmodified |
 | `workflows/vathography_*.json` | Generated from those by `make_workflows.py`: input resize plus 32-bit float EXR output. Use these |
 | `make_workflows.py` | Regenerates `vathography_*.json`. Every edit is asserted, so a changed upstream template fails loudly |
@@ -127,7 +127,17 @@ The image also runs the `vathopy` web GUI (palettes including your own, cycles, 
 ```bash
 ./copy-volume.py --from US-MO-1:<seeded-volume-id> --to US-NE-1:<new-volume-id>
 ./copy-volume.py --from US-MO-1:<seeded-volume-id> --to US-IL-1:<new-volume-id> --gpu "NVIDIA RTX A5000"
+./copy-volume.py --from US-MO-1:<old-volume-id> --to US-MO-1:<new-volume-id>       # same datacenter: no pod
 ```
+
+**In the same datacenter** (to move to a smaller or larger volume, say) no pod is needed. Each file is copied server-side with S3 `copy-object`, which ran at about 110 MB/s on US-MO-1. Cloudflare gives up on a long call (HTTP 524 after about 2 minutes, e.g. the 20.5GB backbone), but the gateway finishes the copy, so the script waits for the object to reach its full size. Files already there at the right size are skipped. Then every file is checked against Hugging Face's SHA-256:
+- A file you also have in `./models/` (from `populate-volume.sh`) is checked without a download: the local copy's SHA-256 must match Hugging Face's, and the target's ETag must equal the local MD5 (a server-side copy's ETag is the content's MD5).
+- Any other file is downloaded once and hashed. That's about 6GB with only the backbone kept locally.
+- `--verify size` only compares sizes with the source.
+
+A file that fails is deleted from the target, so rerunning copies it again. `--pod` uses a pod even within one datacenter.
+
+**Across datacenters:**
 
 1. It reads `models.txt` and gets each file's SHA-256 from Hugging Face (the `X-Linked-Etag` header).
 2. It starts a throwaway pod with the **target** volume at `/workspace`. By default that's a 2 vCPU CPU pod (~$0.06/hr), trying a few CPU instance types (`--cpu cpu3c-2-4` picks one). `--gpu TYPE` uses a GPU pod instead, for datacenters with no CPU supply.
