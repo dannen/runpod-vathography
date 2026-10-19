@@ -95,7 +95,7 @@ Pods are billed while running. Stop the pod when you're done, and the volume kee
 
 ## vathopy GUI on the pod
 
-The image also runs the `vathopy` web GUI (sliders, palettes, cycles, contour lines; see `vathopy`'s README) on **port 8770**, next to ComfyUI:
+The image also runs the `vathopy` web GUI (palettes including your own, cycles, contour lines, creative focus with highlights, looks and 16-bit PNG downloads; see [`vathopy`'s README](https://github.com/dannen/vathopy)) on **port 8770**, next to ComfyUI:
 
 - **URL:** `https://<pod-id>-8770.proxy.runpod.net`, with a password: RunPod's proxy URLs are public.
 - **Input:** the depth maps in ComfyUI's output folder, `/workspace/output/vathography/`, so anything the workflows or `batch.sh` produce shows up in its list (depth EXRs only).
