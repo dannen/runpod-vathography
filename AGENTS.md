@@ -27,10 +27,10 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 ## Current state (2026-10-18)
 
 - **Pod** `vathography-comfyui`, **L40S 48GB** ($1.09/hr) in US-MO-1. The A40 ($0.59) was the first choice but had no CUDA 13 hosts.
-  - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:502c471` (vathopy `8d67604`: creative focus with reach/lean/angle/lock, highlights/result view, MIST, Download PNG, your palettes + `check-palettes`, depth-map checks, collapsible sections), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`. Rolled out 2026-10-18 (being verified as this is written).
+  - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:061a155` (vathopy `8d67604`: creative focus with reach/lean/angle/lock, highlights/result view, MIST, Download PNG, your palettes + `check-palettes`, depth-map checks, collapsible sections), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`. Rolled out 2026-10-18 and verified through the proxy: ComfyUI and the GUI both 401 without the password and 200 with it; the 2496 workflows pushed with `?overwrite=true`; example palettes uploaded to `palettes/` show up in the GUI; `bench.request`/`pull.fetch` authenticate via `podauth`.
   - ComfyUI: `https://<pod-id>-8188.proxy.runpod.net` (password, via nginx). `pull.sh` finds the pod ID. Verified: ComfyUI 0.41.3, torch cu130, `comfy_kitchen backend cuda: available: True`.
   - vathopy GUI: `https://<pod-id>-8770.proxy.runpod.net` (password). Reads `/workspace/output/vathography/`, saves to `/workspace/favorites/`, your palettes from `/workspace/palettes/`. Verified through the proxy: 401 without the password, list, full render (213 ms), save and download.
-  - Earlier images: `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`, `c1eb935`, `ed23784`.
+  - Earlier images: `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`, `c1eb935`, `ed23784` (`502c471` was built but never rolled).
 - **Volume** `vathography-storage` (50GB, US-MO-1): the 10 models (26.38GB), plus `output/`, `input/` and `favorites/`. `input/` and `output/` were purged on 2026-10-18 after everything was pulled.
 - **Local tools:**
   - `batch.sh DIR`: resizes locally (`--resize 2496|4200`, default 2496, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
