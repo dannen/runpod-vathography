@@ -1,0 +1,28 @@
+# Model manifest — the single source of truth for what goes on the volume.
+# Read by both start.sh (pod-side download of anything missing at boot) and
+# populate-volume.sh (local download + S3 upload, bypassing the pod).
+#
+# Format: <models/ subdir> <url>   (filename is the URL's basename)
+# Sizes from the HF API on 2026-10-18. Total: ~26.4GB.
+# All from https://huggingface.co/Comfy-Org/marigold-v2-0, the files the
+# official ComfyUI Marigold V2 templates load.
+
+# Shared backbone: Qwen-Image-Edit-2509, pre-quantized int8_convrot (20.5GB).
+# Runs on comfy-kitchen's CUDA kernels, hence the cu130 torch in the Dockerfile.
+diffusion_models https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/diffusion_models/qwen_image_edit_2509_int8_convrot.safetensors
+
+# Depth (Log-stage2, the paper's final depth model): LoRA 1.7GB, VAE 0.25GB,
+# precomputed conditioning 2.3MB.
+loras            https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_depth_log_stage2.safetensors
+vae              https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_depth_log_stage2_vae.safetensors
+embeddings       https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_depth_conditioning.safetensors
+
+# Surface normals
+loras            https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_normals.safetensors
+vae              https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_normals_vae.safetensors
+embeddings       https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_normals_conditioning.safetensors
+
+# Albedo
+loras            https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_albedo.safetensors
+vae              https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_albedo_vae.safetensors
+embeddings       https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_albedo_conditioning.safetensors

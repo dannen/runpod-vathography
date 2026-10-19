@@ -1,0 +1,7 @@
+models/
+__pycache__/
+s3-credentials
+*.key
+.env
+bench-out/
+vathopy-src/
