@@ -348,7 +348,7 @@ def main():
                 pod = create_pod(gpu_type_id=gpu, **common)
             except Exception as e:
                 msg = str(e)
-                if "dataCenterIds" in msg and "enum" in msg:      # REST doesn't know this datacenter yet
+                if "HTTP 400" in msg and "enum" in msg:           # REST's schema doesn't list this datacenter or GPU type yet
                     try:
                         pod = create_pod_graphql(gpu_type_id=gpu, **common)
                     except Exception as e2:
