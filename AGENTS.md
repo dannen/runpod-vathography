@@ -36,6 +36,7 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
   - US-MO-1: seeded, by server-side `copy-object` from the original 50GB volume, which was then deleted along with its old outputs and favorites.
   - US-NE-1: seeded by `copy-volume.py` (CPU pod). Has RTX PRO 6000 MIG 24/48GB, not yet seen with CUDA 13.
   - US-IL-1: empty (no CPU or A5000 supply to seed it from on 2026-10-19).
+  - `create-pod.sh` takes comma lists for `--datacenter` and `--gpu-type-id` and tries them in order, finding each datacenter's volume by `--volume-name` prefix (GraphQL fallback where REST rejects the datacenter). Volumes named `vathography-storage-<dc suffix>`.
 - **Local tools:**
   - `batch.sh DIR`: resizes locally (`--resize 2496|4200`, default 2496, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
   - `pull.sh`: finds the running pod (cached 30 min) and downloads results to `~/Pictures/vathography/depth/`, plus the GUI's `favorites/` saves to `~/Pictures/vathography/favorites/`. Verified against the volume's S3 checksums (MD5, SHA-256), falls back to S3 if the pod can't deliver, never overwrites (`-001`), keeps MD5-aware records (ComfyUI reuses names after deletions). Also `--from-volume`, `--match`, `--verify-existing`, `--clear-volume`, `--clear-inputs`.

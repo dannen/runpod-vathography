@@ -36,6 +36,14 @@ Usage:
     # Roll a running pod onto a new image tag
     python3 create-pod.py --name vathography-comfyui --image user/vathography-comfyui:latest --update
 
+    # Try several datacenters and GPU types in order, until one has stock. Each
+    # datacenter's volume is found by name (--volume-name, as a prefix), so a
+    # datacenter with no such volume is skipped. GraphQL is used where REST
+    # rejects the datacenter (US-NE-1 in October 2026).
+    python3 create-pod.py --image user/vathography-comfyui:<tag> \\
+        --datacenter US-MO-1,US-NE-1,US-IL-1 \\
+        --gpu-type-id "NVIDIA L40S,NVIDIA RTX A5000,NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb"
+
     # Change GPU type / datacenter / volume (requires delete + recreate)
     python3 create-pod.py --name vathography-comfyui --image user/vathography-comfyui:latest \\
         --gpu-type-id "NVIDIA H100 80GB HBM3" --datacenter <DC> \\
@@ -137,6 +145,39 @@ def create_pod(
     return rest("POST", "/pods", body=body)
 
 
+def create_pod_graphql(name, image, gpu_type_id, datacenter, network_volume_id, container_disk_gb,
+                       volume_mount_path, ports, env, allowed_cuda_versions) -> dict:
+    """The same pod through GraphQL podFindAndDeployOnDemand, for datacenters the REST
+    schema doesn't list yet. One GPU type per call."""
+    inp = {"cloudType": "SECURE", "gpuCount": 1, "gpuTypeId": gpu_type_id, "dataCenterId": datacenter,
+           "networkVolumeId": network_volume_id, "volumeInGb": 0, "volumeMountPath": volume_mount_path,
+           "containerDiskInGb": container_disk_gb, "imageName": image, "name": name,
+           "ports": ",".join(ports or []), "env": [{"key": k, "value": v} for k, v in (env or {}).items()]}
+    if allowed_cuda_versions:
+        inp["allowedCudaVersions"] = allowed_cuda_versions
+    body = json.dumps({"query": "mutation($input: PodFindAndDeployOnDemandInput) "
+                                "{ podFindAndDeployOnDemand(input: $input) { id name } }",
+                       "variables": {"input": inp}}).encode()
+    req = urllib.request.Request("https://api.runpod.io/graphql", data=body, method="POST", headers={
+        "Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}",
+        "User-Agent": "runpod-vathography-pod/1.0"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        r = json.loads(resp.read())
+    pod = (r.get("data") or {}).get("podFindAndDeployOnDemand")
+    if not pod or not pod.get("id"):
+        raise RuntimeError("GraphQL: " + ((r.get("errors") or [{}])[0].get("message") or json.dumps(r)[:300]))
+    return pod
+
+
+def find_volume(datacenter: str, name_prefix: str) -> dict | None:
+    """The network volume in this datacenter whose name starts with name_prefix (the
+    exact name first), or None."""
+    vols = [v for v in rest("GET", "/networkvolumes") if v.get("dataCenterId") == datacenter
+            and v.get("name", "").startswith(name_prefix)]
+    vols.sort(key=lambda v: v["name"] != name_prefix)
+    return vols[0] if vols else None
+
+
 def update_pod(pod_id: str, image: str = None, env: dict = None,
                ports: list[str] = None, container_disk_gb: int = None) -> dict:
     body = {}
@@ -168,9 +209,11 @@ def main():
     )
     parser.add_argument("--name", default="vathography-comfyui", help="Pod name (default: vathography-comfyui)")
     parser.add_argument("--image", help="Docker image reference (e.g. user/vathography-comfyui:latest)")
-    parser.add_argument("--gpu-type-id", help='GPU type, e.g. "NVIDIA RTX PRO 6000 Blackwell Server Edition" (see check-gpu-availability.py)')
-    parser.add_argument("--datacenter", help="Datacenter ID, e.g. US-IL-1 — must match the network volume's datacenter")
-    parser.add_argument("--network-volume-id", help="Network volume ID to attach")
+    parser.add_argument("--gpu-type-id", help='GPU type, e.g. "NVIDIA RTX PRO 6000 Blackwell Server Edition" (see check-gpu-availability.py); '
+                                              'a comma-separated list is tried in order')
+    parser.add_argument("--datacenter", help="Datacenter ID, e.g. US-IL-1 — must match the network volume's datacenter; a comma-separated "
+                                             "list is tried in order, each with its own volume (found by --volume-name)")
+    parser.add_argument("--network-volume-id", help="Network volume ID to attach (one datacenter only; otherwise found by --volume-name)")
     parser.add_argument("--container-disk-gb", type=int, default=40, help="Container disk GB (default: 40)")
     parser.add_argument("--volume-mount-path", default="/workspace", help="Mount path for the network volume (default: /workspace)")
     parser.add_argument("--ports", default="8188/http,8770/http,22/tcp",
@@ -188,7 +231,9 @@ def main():
                               "(needed to change GPU type / datacenter / network volume)")
 
     parser.add_argument("--create-volume", action="store_true", help="Create a network volume and exit")
-    parser.add_argument("--volume-name", default="vathography-storage", help="Volume name (default: vathography-storage)")
+    parser.add_argument("--volume-name", default="vathography-storage",
+                        help="Volume name (default: vathography-storage). Creating a pod without --network-volume-id uses the "
+                             "datacenter's volume whose name starts with this (e.g. vathography-storage-ne)")
     parser.add_argument("--volume-size", type=int, default=30,
                         help="Volume size GB (default: 30; the models take 26.4GB, and a volume can grow later but not shrink)")
 
@@ -256,10 +301,15 @@ def main():
         print(f"  Proxy URL: {proxy_url(pod.get('id', existing['id']))}")
         return
 
+    dcs = [d.strip() for d in (args.datacenter or "").split(",") if d.strip()]
+    gpus = [g.strip() for g in (args.gpu_type_id or "").split(",") if g.strip()]
+    if args.network_volume_id and len(dcs) > 1:
+        parser.error("--network-volume-id goes with a single --datacenter (with a list, each datacenter's volume is found by --volume-name)")
+
     if existing and args.recreate:
         print(f"found (id: {existing['id']}). Deleting for recreate.")
-        if not args.gpu_type_id or not args.datacenter or not args.network_volume_id:
-            parser.error("--recreate requires --gpu-type-id, --datacenter, and --network-volume-id")
+        if not gpus or not dcs:
+            parser.error("--recreate requires --gpu-type-id and --datacenter")
         try:
             delete_pod(existing["id"])
         except Exception as e:
@@ -267,42 +317,57 @@ def main():
             sys.exit(1)
     else:
         print("not found. Creating.")
-        if not args.gpu_type_id or not args.datacenter or not args.network_volume_id:
-            parser.error("--gpu-type-id, --datacenter, and --network-volume-id are required to create a new pod")
+        if not gpus or not dcs:
+            parser.error("--gpu-type-id and --datacenter are required to create a new pod")
 
-    # Fail fast rather than deploying a pod whose /workspace never mounts.
-    try:
-        vol = get_network_volume(args.network_volume_id)
-        if vol.get("dataCenterId") != args.datacenter:
-            print(f"ERROR: network volume {args.network_volume_id} is in datacenter "
-                  f"{vol.get('dataCenterId')!r}, but --datacenter is {args.datacenter!r}. "
-                  "A pod and its network volume must be in the same datacenter or the volume won't mount.")
+    cuda = [v.strip() for v in args.allowed_cuda_versions.split(",") if v.strip()]
+    pod = None
+    for dc in dcs:
+        # Fail fast rather than deploying a pod whose /workspace never mounts.
+        try:
+            if args.network_volume_id:
+                vol = get_network_volume(args.network_volume_id)
+                if vol.get("dataCenterId") != dc:
+                    print(f"ERROR: network volume {args.network_volume_id} is in datacenter "
+                          f"{vol.get('dataCenterId')!r}, but --datacenter is {dc!r}. "
+                          "A pod and its network volume must be in the same datacenter or the volume won't mount.")
+                    sys.exit(1)
+            else:
+                vol = find_volume(dc, args.volume_name)
+                if not vol:
+                    print(f"  {dc}: no volume named {args.volume_name}* there, skipping")
+                    continue
+        except Exception as e:
+            print(f"ERROR: could not look up the network volume for {dc}: {e}")
             sys.exit(1)
-    except Exception as e:
-        print(f"ERROR: could not verify network volume {args.network_volume_id}: {e}")
+        common = dict(name=args.name, image=args.image, datacenter=dc, network_volume_id=vol["id"],
+                      container_disk_gb=args.container_disk_gb, volume_mount_path=args.volume_mount_path,
+                      ports=ports_list, env=env_dict, allowed_cuda_versions=cuda)
+        for gpu in gpus:
+            try:
+                pod = create_pod(gpu_type_id=gpu, **common)
+            except Exception as e:
+                msg = str(e)
+                if "dataCenterIds" in msg and "enum" in msg:      # REST doesn't know this datacenter yet
+                    try:
+                        pod = create_pod_graphql(gpu_type_id=gpu, **common)
+                    except Exception as e2:
+                        msg = str(e2)
+                if not pod:
+                    print(f"  {dc} / {gpu}: {msg.strip()[:160]}")
+                    continue
+            print(f"  {dc} / {gpu}: created (volume {vol.get('name')} {vol['id']})")
+            break
+        if pod:
+            break
+    if not pod:
+        print("ERROR: no pod could be created in " + ", ".join(dcs) + " with " + ", ".join(gpus))
         sys.exit(1)
 
-    try:
-        pod = create_pod(
-            name=args.name,
-            image=args.image,
-            gpu_type_id=args.gpu_type_id,
-            datacenter=args.datacenter,
-            network_volume_id=args.network_volume_id,
-            container_disk_gb=args.container_disk_gb,
-            volume_mount_path=args.volume_mount_path,
-            ports=ports_list,
-            env=env_dict,
-            allowed_cuda_versions=[v.strip() for v in args.allowed_cuda_versions.split(",") if v.strip()],
-        )
-    except Exception as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
-
-    print(f"Created pod: {pod['name']}")
+    print(f"Created pod: {pod.get('name', args.name)}")
     print(f"  Pod ID:     {pod['id']}")
-    print(f"  GPU:        {args.gpu_type_id}")
-    print(f"  Datacenter: {args.datacenter}")
+    print(f"  GPU:        {gpu}")
+    print(f"  Datacenter: {dc}")
     print(f"  Proxy URL:  {proxy_url(pod['id'])}")
     print()
     print("  If the volume wasn't pre-seeded (populate-volume.sh --s3), first boot")

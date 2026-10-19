@@ -95,6 +95,15 @@ All nodes on the main canvas are pinned so they can't be dragged by accident (ri
      --network-volume-id <volume-id>
    ```
    The script only accepts hosts with CUDA 13.0 drivers (`--allowed-cuda-versions`, default `13.0`). If it can't find stock, check that filter first. Add `--env SKIP_MODEL_DOWNLOAD=true` if step 3 is still uploading.
+
+   **With volumes in several datacenters,** give lists and leave out `--network-volume-id`. Each datacenter is tried in order with each GPU type in order, until one has stock:
+   ```bash
+   ./create-pod.sh --image YOUR_DOCKERHUB_USER/vathography-comfyui:<git-sha> \
+     --datacenter US-MO-1,US-NE-1,US-IL-1 \
+     --gpu-type-id "NVIDIA L40S,NVIDIA RTX A5000,NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb" \
+     --env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"
+   ```
+   Each datacenter's volume is the one whose name starts with `--volume-name` (default `vathography-storage`, so `vathography-storage-ne` matches). A datacenter without one is skipped. Where the REST API rejects a datacenter (US-NE-1 in October 2026), the pod is created through GraphQL instead. Seed every volume first (see [Seeding from another volume](#seeding-from-another-volume)), or the pod downloads any missing models on first boot, which can take hours.
 6. Open `https://<pod-id>-8188.proxy.runpod.net` and log in with the same user and password as the vathopy GUI (see **Passwords** below). The workflows are in the **Workflows** sidebar.
 
 Pods are billed while running. Stop the pod when you're done, and the volume keeps everything (30GB is about $2.10/month). 30GB leaves about 3.6GB beside the 26.4GB of models for inputs and results, so clear the volume after pulling (`./pull.sh --clear-volume`); `--volume-size` makes it bigger, and a volume can grow later but not shrink.
