@@ -1,6 +1,6 @@
 # AGENTS.md: Vathography depth (Marigold V2) on RunPod (persistent Pod)
 
-For an AI agent picking up this repo. `README.md` is the runbook. This file records the current state and the decisions behind it. The research behind it is `vathography.md` in the `vathography` repo (§14 is the RunPod plan).
+For an AI agent picking up this repo. `README.md` is the runbook. This file records the current state and the decisions behind it. The research behind it is in the `vathography.md` notes, which aren't public (§14 is the RunPod plan).
 
 ## Decisions
 
@@ -17,7 +17,7 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 - **No raw `.npy`.** The output is the post-processed map: per-image min/max normalized, near = bright, after the VAE decode clamped it to 0–1. `vathopy prep` needs `--kind near-bright` for these files.
 - **Seeding is local** (`populate-volume.sh`, conservative S3 multipart settings), not pod-side.
 - **GPU: 48GB is plenty; 24GB would do** (measured: ~20 GiB of weights plus ≤1.8 GiB per job up to ~3500 px). Prefer cheaper, slower cards: depth jobs take seconds while the pod stays up for minutes.
-- **The vathopy GUI runs on the pod** (port 8770), in its own venv so its numpy/OpenCV/OpenEXR can't affect ComfyUI. `sync-vathopy.sh` copies `vathopy` from `../../vathography` into the gitignored `vathopy-src/` before each build and records the commit in `VATHOPY_COMMIT`.
+- **The vathopy GUI runs on the pod** (port 8770), in its own venv so its numpy/OpenCV/OpenEXR can't affect ComfyUI. `sync-vathopy.sh` copies `vathopy` (https://github.com/dannen/vathopy, checked out next to this repo as `../vathopy`) into the gitignored `vathopy-src/` before each build and records the commit in `VATHOPY_COMMIT`.
 - **Password on the GUI:** RunPod's proxy URLs are public. `VATHOPY_GUI_AUTH` (user:password) comes from the pod env; keep the credentials in a local file outside the repo (mode 600; `build.md` uses `~/.api/runpod/vathopy-gui.auth`). `create-pod.sh --update` replaces the whole env, so **always pass `--env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"`** (see `build.md`).
 - `models.txt` is the only list of models (`start.sh` and `populate-volume.sh` both read it).
 

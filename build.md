@@ -6,7 +6,7 @@ Replace `YOUR_DOCKERHUB_USER` with your Docker Hub user.
 
 ```bash
 python3 make_workflows.py   # if make_workflows.py or an official template changed
-./sync-vathopy.sh           # copy vathopy (the GUI) from ../../vathography into vathopy-src/
+./sync-vathopy.sh           # copy vathopy (the GUI) from a vathopy checkout (default ../vathopy) into vathopy-src/
 docker build --no-cache \
   -t YOUR_DOCKERHUB_USER/vathography-comfyui:latest \
   -t YOUR_DOCKERHUB_USER/vathography-comfyui:$(git rev-parse --short HEAD 2>/dev/null || echo local) \

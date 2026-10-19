@@ -1,6 +1,6 @@
 # Vathography depth (Marigold V2) on RunPod (persistent Pod)
 
-ComfyUI running [Marigold V2](https://github.com/huawei-bayerlab/marigold-v2) monocular depth, normals and albedo estimation on a long-running RunPod **Pod**, used through ComfyUI's web UI via RunPod's HTTP proxy. This is **Phase 1** (pod exploration) of the RunPod plan in the `vathography` repo's `vathography.md` §14. Its job is to measure VRAM, time and quality at each resolution, and settle which resolution, checkpoint and GPU tier a later serverless endpoint should use.
+ComfyUI running [Marigold V2](https://github.com/huawei-bayerlab/marigold-v2) monocular depth, normals and albedo estimation on a long-running RunPod **Pod**, used through ComfyUI's web UI via RunPod's HTTP proxy. This is **Phase 1** (pod exploration) of the RunPod plan in the `vathography.md` research notes (§14; not public). Its job is to measure VRAM, time and quality at each resolution, and settle which resolution, checkpoint and GPU tier a later serverless endpoint should use.
 
 It uses a small image, with all models on a dedicated network volume mounted at `/workspace`. ComfyUI has supported Marigold V2 natively since **v0.36.0** (Comfy-Org/ComfyUI#16232), and all three official templates use core nodes only, so there are **no custom nodes**.
 
@@ -20,7 +20,7 @@ Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-o
 | `create-pod.py` / `.sh` | Create the volume; create / `--update` / `--recreate` the pod |
 | `check-gpu-availability.py` / `check-gpus.sh` | Live GPU stock and pricing |
 | `build.md` | Local build and push checklist |
-| `sync-vathopy.sh` | Copies `vathopy` from the `vathography` repo into `vathopy-src/` (gitignored) for the image's GUI layer; run before every build |
+| `sync-vathopy.sh` | Copies [`vathopy`](https://github.com/dannen/vathopy) from a checkout next to this one (`../vathopy`) into `vathopy-src/` (gitignored) for the image's GUI layer; run before every build |
 | `batch.py` / `batch.sh` | Runs a folder of photos through the pod at the recommended size, waits, then runs `pull.sh`. Needs Pillow |
 | `pull.py` / `pull.sh` | Downloads finished results from the pod's job history into `~/Pictures/vathography/depth`. Finds the running pod itself (cached 30 min) |
 | `bench.py` | Phase 1 benchmark: runs depth/normals/albedo on the pod at given sizes, records time and peak VRAM, saves the EXRs |
