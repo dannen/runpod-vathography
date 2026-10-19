@@ -231,7 +231,7 @@
         "Node name for S&R": "PrimitiveInt"
       },
       "widgets_values": [
-        1280,
+        2496,
         "fixed"
       ]
     },
@@ -550,8 +550,8 @@
       },
       "widgets_values": [
         "lanczos",
-        1280,
-        1280,
+        2496,
+        2496,
         "disabled"
       ]
     },

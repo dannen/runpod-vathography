@@ -3,19 +3,20 @@
 Run a folder of photos through Marigold V2 on the pod, then download the
 results with pull.py (checksum-verified).
 
-    ./batch.sh ~/Pictures/some-folder                  # depth for every photo, 2500 px long edge
+    ./batch.sh ~/Pictures/some-folder                  # depth for every photo, 2496 px long edge
     ./batch.sh DIR --resize 4200                       # 4200 px long edge (panoramas)
     ./batch.sh DIR --predictions depth normals albedo  # all three
     ./batch.sh DIR --via-s3                            # upload through the volume's S3 gateway
     ./batch.sh DIR --dry-run                           # show sizes, upload nothing
 
 Settings (from the Phase 1 tests in AGENTS.md):
-  - Size: --resize 2500 (default) or 4200 sets the long edge in pixels.
-    2500 gave the best depth on regular photos (it degraded by 3750);
-    4200 suits panoramas, where 2500 leaves too few pixels top to bottom
-    (a 4.3:1 panorama at 2500 is 2500 x 585), so wide photos are flagged.
+  - Size: --resize 2496 (default, the same as the workflows) or 4200 sets
+    the long edge in pixels. ~2500 gave the best depth on regular photos (it
+    degraded by 3750); 4200 suits panoramas, where 2496 leaves too few pixels
+    top to bottom (a 4.3:1 panorama at 2496 is 2496 x 576), so wide photos
+    are flagged.
     Photos smaller than the target are never enlarged. Each side is then
-    rounded to the nearest multiple of 16 (2500 at 3:2 -> 2496 x 1664), so
+    rounded to the nearest multiple of 16 (2496 at 3:2 -> 2496 x 1664), so
     the model neither crops nor pads and the depth map is exactly the
     uploaded size, covering the full frame.
   - The resize happens here, before upload (EXIF rotation applied, Lanczos,
@@ -64,8 +65,8 @@ except ImportError:
     sys.exit("ERROR: batch.py needs Pillow (pip install Pillow).")
 
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp"}
-RESIZE_CHOICES = (2500, 4200)
-WIDE = 2.0  # aspect ratio from which --resize 2500 gets a panorama warning
+RESIZE_CHOICES = (2496, 4200)
+WIDE = 2.0  # aspect ratio from which --resize 2496 gets a panorama warning
 PREDICTION_ORDER = ["depth", "normals", "albedo"]
 
 
@@ -180,8 +181,9 @@ def main():
     ap.add_argument("folder", type=Path, help="Folder of photos (jpg, png, tif, webp, bmp)")
     ap.add_argument("--predictions", nargs="+", choices=PREDICTION_ORDER, default=["depth"],
                     help="What to estimate (default: depth)")
-    ap.add_argument("--resize", type=int, choices=RESIZE_CHOICES, default=2500,
-                    help="Long edge in px for the uploads: 2500 (default, regular photos) or 4200 (panoramas)")
+    ap.add_argument("--resize", type=int, choices=RESIZE_CHOICES, default=2496,
+                    help="Long edge in px for the uploads: 2496 (default, regular photos; the workflows' default "
+                         "too) or 4200 (panoramas)")
     ap.add_argument("--via-s3", action="store_true",
                     help="Upload into the pod's volume through RunPod's S3 gateway instead of the web proxy")
     ap.add_argument("--recursive", action="store_true", help="Include photos in subfolders")

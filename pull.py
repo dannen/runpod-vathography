@@ -109,6 +109,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import podauth
+
 UA = {"User-Agent": "runpod-vathography-pull/1.0"}
 REST_BASE = "https://rest.runpod.io/v1"
 CACHE_FILE = Path.home() / ".cache" / "runpod-vathography" / "target.json"
@@ -124,10 +126,12 @@ def fetch(url, headers=None, timeout=60, retries=3):
     last = None
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={**UA, **(headers or {})})
+            req = urllib.request.Request(url, headers={**UA, **podauth.headers_for(url), **(headers or {})})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and podauth.is_pod_url(url):
+                raise SystemExit(f"{url}: {podauth.HINT}") from None
             raise
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             last = e

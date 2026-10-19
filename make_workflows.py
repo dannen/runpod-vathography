@@ -10,10 +10,11 @@ Each official template is LoadImage -> Marigold V2 subgraph -> 8-bit PNG
 SaveImageAdvanced -> ImageCompare. Changes per template:
 
 1. A resize between LoadImage and the subgraph, set by one number: the
-   "Inference size (long edge, px)" node (default 1280). The templates run
-   inference at the photo's own size, which for a camera photo (6000 px and
-   up) runs out of memory and is far above the ~1250 x 835 the Qwen-Image
-   backbone was trained around.
+   "Inference size (long edge, px)" node (default 2496, where Phase 1 found
+   the best depth on sharp photos; 2496 is the multiple of 16 nearest 2500).
+   The templates run inference at the photo's own size, which for a camera
+   photo (6000 px and up) runs out of memory and is well past the point where
+   depth quality falls off (~3750 px).
    Each side is rounded to the nearest multiple of 16, never above the
    photo's own long edge: Get Image Size -> two Math Expressions
    (round(side * L / long_side / 16) * 16) -> Image Scale (lanczos, no
@@ -62,7 +63,7 @@ PREVIEW_ID = 27
 SIZE_ID, LONG_EDGE_ID, WIDTH_ID, HEIGHT_ID = 28, 29, 30, 31
 NAME_ID = 32
 NEW_IDS = (SCALE_ID, PREVIEW_ID, SIZE_ID, LONG_EDGE_ID, WIDTH_ID, HEIGHT_ID, NAME_ID)
-DEFAULT_LONG_EDGE = 1280
+DEFAULT_LONG_EDGE = 2496   # the best depth in Phase 1 (~2500), a multiple of 16
 MULTIPLE = 16
 # a = width, b = height, c = long edge setting (never above the photo's own).
 SIDE_EXPR = "max({m}, round({side} * min(c, max(a, b)) / max(a, b) / {m}) * {m})"

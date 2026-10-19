@@ -36,6 +36,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import podauth
+
 UA = {"User-Agent": "runpod-vathography-bench/1.0"}
 
 PREDICTIONS = {
@@ -53,9 +55,14 @@ SIDE_EXPR = "max(16, round({side} * min(c, max(a, b)) / max(a, b) / 16) * 16)"
 
 
 def request(url, data=None, headers=None, timeout=60):
-    req = urllib.request.Request(url, data=data, headers={**UA, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    req = urllib.request.Request(url, data=data, headers={**UA, **podauth.headers_for(url), **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise SystemExit(f"{url}: {podauth.HINT}") from None
+        raise
 
 
 def get_json(base, path):

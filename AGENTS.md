@@ -9,7 +9,7 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 - **One custom node, ours:** `custom_nodes/vathography` (Vathography Output Name) names outputs after the photo. No third-party nodes (`vathography.md` §7 warns against community Marigold nodes).
 - **Volume contents: depth, normals and albedo** (all three Marigold V2 predictions), about 26.4GB. Only depth/Log-stage2 is packaged for ComfyUI.
 - **`vathography_*.json` is generated, never hand-edited.** `make_workflows.py` builds them from the untouched official templates:
-  - Resize by long edge in pixels (sizes are always given in pixels, never megapixels; default 1280), each side rounded to the nearest multiple of 16 (PrimitiveInt + GetImageSize + two ComfyMathExpression + ImageScale, no crop). That avoids the VAE's 8 px center crop and the DiT's circular padding, so the map is exactly the scaled photo's size.
+  - Resize by long edge in pixels (sizes are always given in pixels, never megapixels; default 2496 since 2026-10-18, was 1280), each side rounded to the nearest multiple of 16 (PrimitiveInt + GetImageSize + two ComfyMathExpression + ImageScale, no crop). That avoids the VAE's 8 px center crop and the DiT's circular padding, so the map is exactly the scaled photo's size.
   - 32-bit float EXR save, named `<photo>_<prediction>_00001.exr` by our node.
   - A Result preview node; Image Compare removed (it looked blank); every main-canvas node pinned.
   - `bench.py` and `batch.py` use the same sizing rule.
@@ -18,20 +18,22 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 - **Seeding is local** (`populate-volume.sh`, conservative S3 multipart settings), not pod-side.
 - **GPU: 48GB is plenty; 24GB would do** (measured: ~20 GiB of weights plus ≤1.8 GiB per job up to ~3500 px). Prefer cheaper, slower cards: depth jobs take seconds while the pod stays up for minutes.
 - **The vathopy GUI runs on the pod** (port 8770), in its own venv so its numpy/OpenCV/OpenEXR can't affect ComfyUI. `sync-vathopy.sh` copies `vathopy` (https://github.com/dannen/vathopy, checked out next to this repo as `../vathopy`) into the gitignored `vathopy-src/` before each build and records the commit in `VATHOPY_COMMIT`.
+- **Your palettes on the pod:** `start.sh` creates `/workspace/palettes/` on the volume and starts the GUI with `vathopy --palettes /workspace/palettes gui …`. Upload palette files there through the S3 gateway (`put-object`, key `palettes/<file>`) after `vathopy check-palettes` passes locally; the GUI re-reads the folder on each page load and skips (and logs) anything that fails vathopy's checks. Looks saved with a user palette refer to it by name.
+- **Untrusted files:** vathopy reads palettes and depth maps as data only and checks them before decoding (header-first size caps, regular files only, no pickles). That matters here because ComfyUI on the pod has no password and its proxy URL is public: anyone with the URL could write files into the output folder the GUI reads.
+- **ComfyUI is behind the same password** (2026-10-18): it has no login of its own, so `start.sh` runs nginx on 8188 (basic auth from `COMFYUI_AUTH`, default `VATHOPY_GUI_AUTH`; websockets passed through) in front of ComfyUI on `127.0.0.1:8189`. No password: open with a warning; nginx failing: ComfyUI stays local-only (fail closed). `batch.py`/`pull.py`/`bench.py` send it via `podauth.py` (env or `~/.api/runpod/vathopy-gui.auth`), to `*.proxy.runpod.net` only.
 - **Password on the GUI:** RunPod's proxy URLs are public. `VATHOPY_GUI_AUTH` (user:password) comes from the pod env; keep the credentials in a local file outside the repo (mode 600; `build.md` uses `~/.api/runpod/vathopy-gui.auth`). `create-pod.sh --update` replaces the whole env, so **always pass `--env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"`** (see `build.md`).
 - `models.txt` is the only list of models (`start.sh` and `populate-volume.sh` both read it).
 
 ## Current state (2026-10-18)
 
 - **Pod** `vathography-comfyui`, **L40S 48GB** ($1.09/hr) in US-MO-1. The A40 ($0.59) was the first choice but had no CUDA 13 hosts.
-  - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:ed23784` (vathopy `9769d79`), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`.
-  - vathopy has moved on since that image (creative focus, MIST, highlights, reach, lean/angle, lock, Download PNG): rebuild and roll (`build.md`) to bring them to the pod's GUI.
-  - ComfyUI: `https://<pod-id>-8188.proxy.runpod.net` (no auth). `pull.sh` finds the pod ID. Verified: ComfyUI 0.41.3, torch cu130, `comfy_kitchen backend cuda: available: True`.
-  - vathopy GUI: `https://<pod-id>-8770.proxy.runpod.net` (password). Reads `/workspace/output/vathography/`, saves to `/workspace/favorites/`. Verified through the proxy: 401 without the password, list, full render (213 ms), save and download.
-  - Earlier images: `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`, `c1eb935`.
+  - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:502c471` (vathopy `8d67604`: creative focus with reach/lean/angle/lock, highlights/result view, MIST, Download PNG, your palettes + `check-palettes`, depth-map checks, collapsible sections), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`. Rolled out 2026-10-18 (being verified as this is written).
+  - ComfyUI: `https://<pod-id>-8188.proxy.runpod.net` (password, via nginx). `pull.sh` finds the pod ID. Verified: ComfyUI 0.41.3, torch cu130, `comfy_kitchen backend cuda: available: True`.
+  - vathopy GUI: `https://<pod-id>-8770.proxy.runpod.net` (password). Reads `/workspace/output/vathography/`, saves to `/workspace/favorites/`, your palettes from `/workspace/palettes/`. Verified through the proxy: 401 without the password, list, full render (213 ms), save and download.
+  - Earlier images: `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`, `c1eb935`, `ed23784`.
 - **Volume** `vathography-storage` (50GB, US-MO-1): the 10 models (26.38GB), plus `output/`, `input/` and `favorites/`. `input/` and `output/` were purged on 2026-10-18 after everything was pulled.
 - **Local tools:**
-  - `batch.sh DIR`: resizes locally (`--resize 2500|4200`, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
+  - `batch.sh DIR`: resizes locally (`--resize 2496|4200`, default 2496, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
   - `pull.sh`: finds the running pod (cached 30 min) and downloads results to `~/Pictures/vathography/depth/`, plus the GUI's `favorites/` saves to `~/Pictures/vathography/favorites/`. Verified against the volume's S3 checksums (MD5, SHA-256), falls back to S3 if the pod can't deliver, never overwrites (`-001`), keeps MD5-aware records (ComfyUI reuses names after deletions). Also `--from-volume`, `--match`, `--verify-existing`, `--clear-volume`, `--clear-inputs`.
   - `bench.py`: time and peak VRAM per size.
 - **The US-CA-2 24GB test was cancelled** (2026-10-18) and its volume deleted. A5000, RTX 6000 Ada and 4090 had no CUDA 13 hosts there for an hour of retries.
@@ -98,7 +100,7 @@ Time and memory depend on total pixel count, not just the long edge. A 3:2 lands
   - The move is not done. README "GPU and VRAM" has the order: prove CUDA 13 on an A5000 host before seeding, then bench, then delete the old pod and volume.
   - A5000 speed at 2500 px is still unmeasured (estimated 20–30 s).
 - **`batch.sh` (2026-10-18):**
-  - `--resize 2500` (default) or `4200` sets the long edge, then each side is snapped to a multiple of 16 (3:2 at 2500 → 2496 × 1664). Wide photos are flagged at 2500. `--via-s3` uploads into the pod's volume `input/` through S3, with an MD5 check.
+  - `--resize 2496` (default; was 2500 until 2026-10-18) or `4200` sets the long edge, then each side is snapped to a multiple of 16 (3:2 at 2496 → 2496 × 1664). Wide photos are flagged at 2500. `--via-s3` uploads into the pod's volume `input/` through S3, with an MD5 check.
   - ComfyUI's default cache keeps only the latest job's nodes, so running any other workflow between batches drops the 20 GB model, and the next job reloads it (~2 min). `--cache-lru` in `start.sh` would avoid that; not done.
   - Resizes locally with Pillow before upload, queues grouped by prediction, then runs `pull.sh`.
   - Tested end to end on 4 photos, including a 120MB panorama: 12 s of GPU time, all verified.

@@ -16,7 +16,8 @@
 #    entirely (e.g. while populate-volume.sh --s3 is still uploading).
 # 5. Seed the bundled workflows into the Workflows sidebar.
 # 6. Start the vathopy GUI (port 8770) in the background.
-# 7. exec ComfyUI as PID 1 so RunPod's stop/restart signals land correctly.
+# 7. exec ComfyUI as PID 1 so RunPod's stop/restart signals land correctly,
+#    behind nginx's password (the vathopy GUI's) when one is set.
 set -euo pipefail
 
 COMFY_ROOT=/opt/ComfyUI
@@ -104,6 +105,47 @@ if [[ "${VATHOPY_GUI:-on}" != "off" && -x /opt/vathopy/bin/vathopy ]]; then
   ) &
 fi
 
+# ComfyUI has no login of its own, and RunPod's proxy URL is public. nginx on 8188 asks for the
+# same user:password as the vathopy GUI (HTTP basic auth) and passes everything, websockets
+# included, to ComfyUI on 127.0.0.1:8189, which nothing else can reach. COMFYUI_AUTH
+# (user:password) defaults to VATHOPY_GUI_AUTH; COMFYUI_AUTH=off, or no password at all, leaves
+# ComfyUI open on 8188 as before (with a warning), so the pod still boots.
+COMFYUI_AUTH="${COMFYUI_AUTH:-${VATHOPY_GUI_AUTH:-}}"
 cd "$COMFY_ROOT"
+if [[ "$COMFYUI_AUTH" == *:* && -x /usr/sbin/nginx ]]; then
+  (
+    umask 077
+    hash=$(printf '%s' "${COMFYUI_AUTH#*:}" | openssl passwd -apr1 -stdin)   # the password via stdin, not argv
+    printf '%s:%s\n' "${COMFYUI_AUTH%%:*}" "$hash" > /etc/nginx/comfyui.htpasswd
+  )
+  chgrp www-data /etc/nginx/comfyui.htpasswd && chmod 640 /etc/nginx/comfyui.htpasswd   # nginx's workers read it
+  cat > /etc/nginx/conf.d/comfyui.conf <<'NGINX'
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+server {
+    listen 8188 default_server;
+    client_max_body_size 200m;
+    location / {
+        auth_basic "ComfyUI";
+        auth_basic_user_file /etc/nginx/comfyui.htpasswd;
+        proxy_pass http://127.0.0.1:8189;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization "";        # ComfyUI doesn't need the password
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 1d;
+        proxy_send_timeout 1d;
+    }
+}
+NGINX
+  if ! { nginx -t -q && nginx; }; then          # fail closed: never fall back to an open ComfyUI
+    echo "[boot] ERROR: nginx didn't start; ComfyUI stays on 127.0.0.1 only, unreachable from outside"
+  fi
+  echo "[boot] starting ComfyUI on 127.0.0.1:8189 behind nginx on 0.0.0.0:8188 (password required)"
+  exec ./venv/bin/python main.py --listen 127.0.0.1 --port 8189
+fi
+[[ "$COMFYUI_AUTH" == "off" ]] || echo "[boot] WARNING: no COMFYUI_AUTH/VATHOPY_GUI_AUTH (user:password); ComfyUI has no password"
 echo "[boot] starting ComfyUI on 0.0.0.0:8188"
 exec ./venv/bin/python main.py --listen 0.0.0.0 --port 8188

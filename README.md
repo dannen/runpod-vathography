@@ -24,6 +24,7 @@ Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-o
 | `batch.py` / `batch.sh` | Runs a folder of photos through the pod at the recommended size, waits, then runs `pull.sh`. Needs Pillow |
 | `pull.py` / `pull.sh` | Downloads finished results from the pod's job history into `~/Pictures/vathography/depth`. Finds the running pod itself (cached 30 min) |
 | `bench.py` | Phase 1 benchmark: runs depth/normals/albedo on the pod at given sizes, records time and peak VRAM, saves the EXRs |
+| `podauth.py` | The pod's password (ComfyUI and the GUI share it) for `batch.py`, `pull.py` and `bench.py`: sent to the pod's proxy URLs only |
 | `AGENTS.md` | Decisions, current state and open items, for an agent picking this up |
 
 ## Models (~26.4GB, see `models.txt`)
@@ -51,9 +52,9 @@ Only `depth/Log-stage2` is packaged for ComfyUI. The other checkpoints (Uniform-
 
 Compared with the official templates, each one:
 
-- **Resizes the input first, to multiples of 16.** Set the size on the **Inference size (long edge, px)** node, which sits under Load Image. The photo keeps its shape, and each side is rounded to the nearest multiple of 16 px, never above the photo's own size: a 3:2 photo at 2500 runs at 2496 × 1664. Three small collapsed nodes do the arithmetic (Get Image Size, then Width and Height math expressions) and feed an Image Scale node (lanczos, no crop).
+- **Resizes the input first, to multiples of 16.** Set the size on the **Inference size (long edge, px)** node, which sits under Load Image. The photo keeps its shape, and each side is rounded to the nearest multiple of 16 px, never above the photo's own size: a 3:2 photo at 2496 runs at 2496 × 1664. Three small collapsed nodes do the arithmetic (Get Image Size, then Width and Height math expressions) and feed an Image Scale node (lanczos, no crop).
   - **Why multiples of 16:** otherwise the VAE crops each side to a multiple of 8 and the model pads an odd side with content wrapped around from the opposite edge. The depth map would come out up to 7 px smaller than the photo, not covering the full frame. With multiples of 16 it's exactly the scaled photo's size, so scaling it back to the original's dimensions lines up. The rounding stretches the shape by at most 8 px per side (~0.5%), which scaling back undoes.
-  - **Why resize at all:** the official templates run inference at the photo's own size, which for a camera photo (6000 px and up) runs out of memory. The default is **1280 px**, close to the ~1250 × 835 the Qwen-Image backbone was trained around. Change it for the resolution tests.
+  - **Why resize at all:** the official templates run inference at the photo's own size, which for a camera photo (6000 px and up) runs out of memory. The default is **2496 px** (the multiple of 16 nearest 2500, where Phase 1 found the best depth on sharp photos; see below), the same as `batch.sh`. Change it for panoramas (~4200) or resolution tests.
 - **Saves 32-bit float EXR** instead of 8-bit PNG, so the depth map isn't cut to 256 levels. That matters because the Blender add-on turns depth into real geometry and warns about banding on 8-bit maps.
 
 All nodes on the main canvas are pinned so they can't be dragged by accident (right-click > Unpin to move one). The **Result preview** node shows the result as soon as the job finishes (an 8-bit preview; the EXR is what gets saved). The official templates' Image Compare node is removed: it starts on the input photo and only reveals the result as you drag across it, so it looked blank.
@@ -88,7 +89,7 @@ All nodes on the main canvas are pinned so they can't be dragged by accident (ri
      --network-volume-id <volume-id>
    ```
    The script only accepts hosts with CUDA 13.0 drivers (`--allowed-cuda-versions`, default `13.0`). If it can't find stock, check that filter first. Add `--env SKIP_MODEL_DOWNLOAD=true` if step 3 is still uploading.
-6. Open `https://<pod-id>-8188.proxy.runpod.net`. The workflows are in the **Workflows** sidebar.
+6. Open `https://<pod-id>-8188.proxy.runpod.net` and log in with the same user and password as the vathopy GUI (see **Passwords** below). The workflows are in the **Workflows** sidebar.
 
 Pods are billed while running. Stop the pod when you're done, and the volume keeps everything (50GB is about $3.50/month).
 
@@ -108,7 +109,8 @@ The image also runs the `vathopy` web GUI (sliders, palettes, cycles, contour li
   ```
 
   The pod's GUI runs the same checks and skips anything that fails (its log, `/tmp/vathopy-gui.log`, says why). Looks saved with one of these palettes need it in the folder wherever they're rendered again.
-- **Password:** `start.sh` passes `VATHOPY_GUI_AUTH` (`user:password`) from the pod's environment. Keep it in a local file outside the repo (mode 600) and pass it on every `--update` (see `build.md`). Without it the GUI starts but logs a warning.
+- **Passwords:** `VATHOPY_GUI_AUTH` (`user:password`) in the pod's environment protects **both** the GUI (8770) and **ComfyUI** (8188). ComfyUI has no login of its own, so `start.sh` puts nginx in front of it: nginx on 8188 asks for the password (HTTP basic auth) and passes everything, websockets included, to ComfyUI on `127.0.0.1:8189`, which can't be reached any other way. Set `COMFYUI_AUTH` to give ComfyUI a different `user:password`, or `COMFYUI_AUTH=off` to leave it open. Without any password both start open and log a warning; if nginx fails to start, ComfyUI stays local-only (unreachable) rather than open. Keep the password in a local file outside the repo (mode 600, `~/.api/runpod/vathopy-gui.auth`) and pass it on every `--update` (see `build.md`).
+- **The tools log in too:** `batch.sh`, `pull.sh` and `bench.py` send the password on requests to the pod's proxy URLs (only there, never to RunPod's API), from `VATHOPY_GUI_AUTH` or the file `~/.api/runpod/vathopy-gui.auth` (another file: `VATHOPY_GUI_AUTH_FILE`); see `podauth.py`. Without it they stop with a message saying where to put it.
 - **Logs and control:** on the pod, `/tmp/vathopy-gui.log`. It's restarted if it exits. Set `VATHOPY_GUI=off` to not start it.
 - **Building:** it has its own venv (`/opt/vathopy`), so its numpy/OpenCV/OpenEXR can't affect ComfyUI's. Run `./sync-vathopy.sh` before `docker build` (see `build.md`). The image records the source commit in `/opt/vathopy/VATHOPY_COMMIT`.
 
@@ -150,16 +152,16 @@ Options, from `./check-gpus.sh` on 2026-10-18 (stock changes hourly):
 `./batch.sh <folder>` runs every photo in a folder through the pod and downloads the results:
 
 ```bash
-./batch.sh ~/Pictures/some-folder                   # depth for every photo, 2500 px long edge
+./batch.sh ~/Pictures/some-folder                   # depth for every photo, 2496 px long edge
 ./batch.sh DIR --resize 4200                        # 4200 px long edge (panoramas)
 ./batch.sh DIR --predictions depth normals albedo   # all three
 ./batch.sh DIR --via-s3                             # upload through the volume's S3 gateway, not the web proxy
 ./batch.sh DIR --dry-run                            # show the planned sizes; upload nothing
 ```
 
-1. **Sizing:** `--resize 2500` (the default) or `--resize 4200` sets the long edge in pixels, keeping the photo's shape.
-   - **2500:** gave the best depth on regular photos (depth degraded by 3750).
-   - **4200:** for panoramas, since 2500 leaves too few pixels top to bottom (a 4.3:1 panorama at 2500 is 2500 × 585). With the default, wide photos (2:1 or wider) are flagged in the plan.
+1. **Sizing:** `--resize 2496` (the default, matching the workflows) or `--resize 4200` sets the long edge in pixels, keeping the photo's shape.
+   - **2496:** ~2500 gave the best depth on regular photos (depth degraded by 3750); 2496 is the nearest multiple of 16.
+   - **4200:** for panoramas, since 2496 leaves too few pixels top to bottom (a 4.3:1 panorama at 2496 is 2496 × 576). With the default, wide photos (2:1 or wider) are flagged in the plan.
    - **Small photos:** a photo smaller than the target is never enlarged.
 2. **Preparing:** the photo is resized here, before upload (EXIF rotation applied, Lanczos, JPEG quality 95). Uploads are a few MB instead of 10–120 MB.
 3. **Uploading:** by default through ComfyUI's upload, via RunPod's web proxy. `--via-s3` writes each photo straight into the pod's volume (`input/batch-<time>/`) through RunPod's S3 gateway instead, and checks the MD5 the gateway reports against the local file. That avoids the proxy and its 100 MB limit. It needs the `aws` CLI and `~/.api/runpod/s3-credentials`, like `pull.sh`.
@@ -172,8 +174,8 @@ Photos that already have a result in the output folder are skipped; `--force` re
 
 ## Verification
 
-1. `curl -sf -A curl/8 https://<pod-id>-8188.proxy.runpod.net/system_stats` returns ComfyUI `0.41.3` and a CUDA device. The server log should show `comfy_kitchen backend cuda: available: True`. If it doesn't, the int8 kernels are falling back to a slow path.
-2. Load `vathography_depth.json`, upload a photo into Load Image, and queue it at the default 1280 px long edge. Check that an EXR appears under `/workspace/output/vathography/`.
+1. `curl -sf -A curl/8 -u "$(cat ~/.api/runpod/vathopy-gui.auth)" https://<pod-id>-8188.proxy.runpod.net/system_stats` returns ComfyUI (and a 401 without `-u`) `0.41.3` and a CUDA device. The server log should show `comfy_kitchen backend cuda: available: True`. If it doesn't, the int8 kernels are falling back to a slow path.
+2. Load `vathography_depth.json`, upload a photo into Load Image, and queue it at the default 2496 px long edge. Check that an EXR appears under `/workspace/output/vathography/`.
 3. Run `vathography_normals.json` and `vathography_albedo.json` once each.
 4. Locally, run the EXR through `vathopy` (step 3 of the next section) and load it in the Blender add-on.
 
@@ -265,7 +267,7 @@ What to measure (`vathography.md` §14.4), with results recorded in `AGENTS.md`:
 ## Notes
 
 - **Uploads over 100 MB fail with HTTP 413.** That's Cloudflare in front of RunPod's proxy, not ComfyUI. Save large photos as high-quality JPEG (quality 95) instead of PNG: a 16350 × 3828 panorama is 120 MB as PNG and 8 MB as JPEG.
-- **Panoramas need a larger long edge.** The workflow sizes by the long edge, so the default 1280 turns a 4.3:1 panorama into 1280 × 300. Use about 4000 px (4000 × 936), which is roughly the pixel count of a 2500 px regular photo.
+- **Panoramas need a larger long edge.** The workflow sizes by the long edge, so the default 2496 turns a 4.3:1 panorama into 2496 × 576. Use about 4000–4200 px (4000 × 936), which is roughly the pixel count of a 2496 px regular photo.
 - **Scripting the API through the proxy:** Cloudflare rejects Python urllib's default User-Agent (`error code: 1010`). Set a User-Agent header.
 - **Proxy timeout:** RunPod's proxy drops connections after about 100s, which can cut the progress websocket during long runs. The job keeps running on the server, and refreshing the tab reconnects.
 - **Serverless:** not set up. It's Phase 2 (`vathography.md` §14.5), built after Phase 1 fixes the resolution and GPU tier. `runpod/worker-comfyui` 5.11.0 ships ComfyUI 0.34.0, which predates Marigold V2 (v0.36.0), so it needs either a newer ComfyUI or its own handler. The pod tooling's lessons apply: results go to S3 rather than base64, the region is lowercase, downloads use `get-object`, and the template is pinned to a git-sha image tag.

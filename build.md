@@ -30,7 +30,7 @@ Point the pod at the new **git-sha tag**, not `:latest`:
   --env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"
 ```
 
-**Always pass `--env VATHOPY_GUI_AUTH=...`:** `--update` replaces the pod's whole env list, so leaving it out would bring the vathopy GUI back up with no password on a public URL.
+**Always pass `--env VATHOPY_GUI_AUTH=...`:** `--update` replaces the pod's whole env list, so leaving it out would bring the vathopy GUI **and ComfyUI** back up with no password on a public URL.
 
 Why not `:latest`: RunPod has been seen restarting workers on the image they already had after a new `:latest` was pushed. Changing the image reference forces a fresh pull.
 

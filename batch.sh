@@ -2,7 +2,7 @@
 # Run a folder of photos through Marigold V2 on the pod, then pull the results (see batch.py).
 #
 # Usage:
-#   ./batch.sh DIR                                   # depth for every photo in DIR, 2500 px long edge
+#   ./batch.sh DIR                                   # depth for every photo in DIR, 2496 px long edge
 #   ./batch.sh DIR --resize 4200 --via-s3
 #   ./batch.sh DIR --predictions depth normals albedo
 #   ./batch.sh DIR --dry-run

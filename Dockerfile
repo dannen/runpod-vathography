@@ -25,9 +25,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONNOUSERSITE=1
 
 # ───────────────────── System packages ─────────────────────
+# nginx + openssl: the password in front of ComfyUI (start.sh), which has none of its own.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl git ca-certificates rsync util-linux \
         python3 python3-venv python3-pip \
+        nginx openssl \
+    && rm -f /etc/nginx/sites-enabled/default \
     && rm -rf /var/lib/apt/lists/*
 
 # ───────────────────── ComfyUI core ─────────────────────
