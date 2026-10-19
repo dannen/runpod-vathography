@@ -17,6 +17,21 @@ is deleted from the target, so a rerun copies it again.
 
   ./copy-volume.py --from US-MO-1:<old-volume-id> --to US-MO-1:<new-volume-id>
 
+Pushing (--push): when the target's datacenter has no pod supply, the pod runs in
+the SOURCE datacenter instead, with the source volume at /workspace, and uploads
+each file to the target's S3 gateway. Uploads go in 8 MB parts (the gateway sits
+behind Cloudflare, which refuses a request over 100 MB with HTTP 413, and it
+ignores x-amz-checksum-sha256), so each file is verified by its ETag: the pod
+computes the multipart ETag (MD5 of the parts' MD5s) from its own copy, whose
+SHA-256 it has checked against Hugging Face's, and compares it with the one the
+target lists. That also catches a CompleteMultipartUpload that reports failure
+after the object landed. Files over --max-size (default 5 GB, which leaves out the
+20.5GB backbone) are skipped: upload those with populate-volume.sh from a
+machine that has them (it skips files already on the volume). The job logs to
+push.log on the source volume.
+
+  ./copy-volume.py --from US-NE-1:<volume-id> --to US-IL-1:<volume-id> --push
+
 Different datacenters (or --pod): a throwaway pod (a 2 vCPU CPU pod by default, ~$0.06/hr; or the cheapest GPU pod
 with --gpu, for datacenters with no CPU supply) starts with the TARGET volume at
 /workspace and runs a short job: `get-object` each file in models.txt from the
@@ -97,6 +112,77 @@ sleep infinity
 """
 
 
+PUSH_PART = 8 << 20          # bytes per multipart part, as populate-volume.sh
+
+PUSH_JOB = r"""
+import base64, hashlib, json, os, subprocess, time
+RUN, DC, VOL, MAX = "__RUN__", "__DST_DC_LC__", "__DST_VOL__", __MAX__
+PART = __PART__
+FILES = json.loads(base64.b64decode("__FILES__"))
+LOG = "/workspace/push.log"
+cfg = "/tmp/aws.cfg"
+open(cfg, "w").write(f"[default]\nretry_mode = adaptive\nmax_attempts = 15\ns3 =\n"
+                     f"    multipart_threshold = {PART}\n    multipart_chunksize = {PART}\n    max_concurrent_requests = 4\n")
+os.environ["AWS_CONFIG_FILE"] = cfg
+AWS = ["aws", "--endpoint-url", f"https://s3api-{DC}.runpod.io", "--region", DC, "--cli-read-timeout", "600"]
+
+def log(msg):
+    with open(LOG, "a") as f:
+        f.write(f"[seed] {msg}\n")
+
+def hashes(path):
+    sha, parts, whole = hashlib.sha256(), [], hashlib.md5()
+    with open(path, "rb") as f:
+        while chunk := f.read(PART):
+            sha.update(chunk); whole.update(chunk); parts.append(hashlib.md5(chunk).digest())
+    etag = whole.hexdigest() if len(parts) <= 1 else hashlib.md5(b"".join(parts)).hexdigest() + f"-{len(parts)}"
+    return sha.hexdigest(), etag
+
+def target_etag(key):
+    for _ in range(4):
+        r = subprocess.run(AWS + ["s3api", "list-objects-v2", "--bucket", VOL, "--prefix", key, "--output", "json"],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            for o in json.loads(r.stdout or "{}").get("Contents", []):
+                if o["Key"] == key:
+                    return o["Size"], o.get("ETag", "").strip('"')
+            return None, None
+        time.sleep(10)
+    return None, None
+
+log(f"start {RUN} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+fail = skipped = 0
+for key, want in FILES:
+    path = "/workspace/" + key
+    if not os.path.isfile(path):
+        log(f"FAILED {key}: not on the source volume"); fail += 1; continue
+    size = os.path.getsize(path)
+    if size > MAX:
+        log(f"skip {key} ({size / 1e9:.1f} GB > --max-size): upload it another way"); skipped += 1; continue
+    sha, etag = hashes(path)
+    if sha != want:
+        log(f"FAILED {key}: the source copy's SHA-256 isn't Hugging Face's"); fail += 1; continue
+    if target_etag(key) == (size, etag):
+        log(f"have {key}"); continue
+    ok = False
+    for attempt in (1, 2, 3):
+        t0 = time.time()
+        r = subprocess.run(AWS + ["s3", "cp", "--only-show-errors", path, f"s3://{VOL}/{key}"], capture_output=True, text=True)
+        dt = max(time.time() - t0, 1)
+        got = target_etag(key)
+        if got == (size, etag):
+            note = "" if r.returncode == 0 else " (the upload call failed, but the object landed)"
+            log(f"ok {key} {size} bytes in {dt:.0f} s ({size / dt / 1e6:.0f} MB/s), ETag OK{note}")
+            ok = True; break
+        log(f"attempt {attempt} {key}: target has {got}, want ({size}, {etag}); {(r.stderr.strip().splitlines() or [''])[-1][:150]}")
+        time.sleep(10)
+    if not ok:
+        fail += 1
+end = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+log((f"ALL OK {end}" if not fail else f"FAILED {end}") + (f" ({skipped} skipped)" if skipped else ""))
+"""
+
+
 def runpod_key():
     if os.environ.get("RUNPOD_API_KEY"):
         return os.environ["RUNPOD_API_KEY"]
@@ -170,10 +256,11 @@ def api(url, body, key, method="POST"):
 def create_pod(args, job, key, ak, sk):
     """Pod id, or None. CPU pods go through GraphQL: REST /v1/pods rejects some datacenters (US-NE-1)."""
     name = f"vathography-copy-{args.to_dc.lower()}"
+    dc, vol = (args.src_dc, args.src_vol) if args.push else (args.to_dc, args.to_vol)
     if args.gpu:
         r = api("https://rest.runpod.io/v1/pods", {
             "name": name, "imageName": args.image, "cloudType": "SECURE", "gpuTypeIds": [args.gpu], "gpuCount": 1,
-            "dataCenterIds": [args.to_dc], "dataCenterPriority": "custom", "networkVolumeId": args.to_vol,
+            "dataCenterIds": [dc], "dataCenterPriority": "custom", "networkVolumeId": vol,
             "volumeInGb": 0, "volumeMountPath": "/workspace", "containerDiskInGb": 10, "ports": [],
             "env": {"AWS_ACCESS_KEY_ID": ak, "AWS_SECRET_ACCESS_KEY": sk}, "dockerStartCmd": ["bash", "-c", job]}, key)
         if r.get("id"):
@@ -183,7 +270,7 @@ def create_pod(args, job, key, ak, sk):
         return None
     b64 = base64.b64encode(job.encode()).decode()
     for inst in ([args.cpu] if args.cpu else CPU_INSTANCES):
-        inp = {"instanceId": inst, "cloudType": "SECURE", "dataCenterId": args.to_dc, "networkVolumeId": args.to_vol,
+        inp = {"instanceId": inst, "cloudType": "SECURE", "dataCenterId": dc, "networkVolumeId": vol,
                "volumeMountPath": "/workspace", "containerDiskInGb": 10, "deployCost": 0.5, "imageName": args.image,
                "name": name, "startJupyter": False, "startSsh": False, "ports": "",
                "dockerArgs": f"bash -c 'echo {b64} | base64 -d | bash'",
@@ -203,13 +290,15 @@ def follow(args, ak, sk, run):
     """Print this run's [seed] lines until its job ends; True if it succeeded. seed.log is
     appended to across runs, so only the lines after this run's start line count."""
     env = {**os.environ, "AWS_ACCESS_KEY_ID": ak, "AWS_SECRET_ACCESS_KEY": sk}
-    dc = args.to_dc.lower()
+    # A pulling pod logs on the target volume; a pushing one on the source volume, where it runs.
+    dc, vol, name = (args.src_dc, args.src_vol, "push.log") if args.push else (args.to_dc, args.to_vol, "seed.log")
+    dc = dc.lower()
     shown = 0
     with tempfile.TemporaryDirectory() as tmp:
         log = Path(tmp) / "seed.log"
         while True:
             r = subprocess.run(["aws", "--endpoint-url", f"https://s3api-{dc}.runpod.io", "--region", dc, "s3api",
-                                "get-object", "--bucket", args.to_vol, "--key", "seed.log", str(log)],
+                                "get-object", "--bucket", vol, "--key", name, str(log)],
                                env=env, capture_output=True, text=True)
             if r.returncode == 0:
                 lines = [l for l in log.read_text(errors="replace").splitlines() if l.startswith("[seed]")]
@@ -347,6 +436,10 @@ def main():
     ap.add_argument("--from", dest="src", required=True, metavar="DC:VOLUME", help="the seeded volume, e.g. US-MO-1:abc123")
     ap.add_argument("--to", dest="dst", required=True, metavar="DC:VOLUME", help="the volume to seed")
     ap.add_argument("--pod", action="store_true", help="use a pod even when both volumes are in one datacenter")
+    ap.add_argument("--push", action="store_true",
+                    help="run the pod in the source datacenter and upload to the target (when the target has no pod supply)")
+    ap.add_argument("--max-size", type=float, default=5.0, metavar="GB",
+                    help="--push: skip files bigger than this (default 5, which skips the 20.5GB backbone)")
     ap.add_argument("--verify", choices=["full", "size"], default="full",
                     help="same-datacenter copies: check SHA-256s (default; downloads files with no local copy) or only sizes")
     ap.add_argument("--cpu", metavar="INSTANCE", help=f"CPU instance id (<flavor>-<vcpu>-<memGB>); default: try {', '.join(CPU_INSTANCES)}")
@@ -369,7 +462,7 @@ def main():
     ak, sk = s3_creds()
     files = manifest()
     print(f"{len(files)} files from {args.src} to {args.dst} (SHA-256 from Hugging Face)")
-    if args.src_dc.upper() == args.to_dc.upper() and not (args.pod or args.cpu or args.gpu):
+    if args.src_dc.upper() == args.to_dc.upper() and not (args.pod or args.push or args.cpu or args.gpu):
         env = {**os.environ, "AWS_ACCESS_KEY_ID": ak, "AWS_SECRET_ACCESS_KEY": sk}
         print("Same datacenter: server-side copy-object, no pod.")
         copied = server_copy(args, files, env)
@@ -380,8 +473,16 @@ def main():
 
     key = runpod_key()
     run = f"run-{int(time.time())}"
-    job = (POD_JOB.replace("__RUN__", run).replace("__SRC_DC_LC__", args.src_dc.lower()).replace("__SRC_VOL__", args.src_vol)
-           .replace("__LIST__", "\n".join(f"{k} {s}" for k, s in files)))
+    if args.push:
+        py = (PUSH_JOB.replace("__RUN__", run).replace("__DST_DC_LC__", args.to_dc.lower()).replace("__DST_VOL__", args.to_vol)
+              .replace("__MAX__", str(int(args.max_size * 1e9))).replace("__PART__", str(PUSH_PART))
+              .replace("__FILES__", base64.b64encode(json.dumps(files).encode()).decode()))
+        job = ("set -u\npip install -q --root-user-action=ignore awscli >/workspace/push-pip.log 2>&1 "
+               "|| echo '[seed] pip failed' >> /workspace/push.log\n"
+               f"echo {base64.b64encode(py.encode()).decode()} | base64 -d > /tmp/push.py && python3 /tmp/push.py\nsleep infinity\n")
+    else:
+        job = (POD_JOB.replace("__RUN__", run).replace("__SRC_DC_LC__", args.src_dc.lower()).replace("__SRC_VOL__", args.src_vol)
+               .replace("__LIST__", "\n".join(f"{k} {s}" for k, s in files)))
     pod = create_pod(args, job, key, ak, sk)
     if not pod:
         sys.exit("No pod available. Try again later, another --cpu instance, or --gpu.")

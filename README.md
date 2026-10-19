@@ -146,6 +146,15 @@ The image also runs the `vathopy` web GUI (palettes including your own, cycles, 
 
 A file that fails is deleted from the target, so rerunning copies it again. `--pod` uses a pod even within one datacenter.
 
+**Pushing, when the target datacenter has no pods free** (`--push`): the pod runs in the *source* datacenter instead, on the seeded volume, and uploads each file to the target's S3 gateway:
+```bash
+./copy-volume.py --from US-NE-1:<seeded-volume-id> --to US-IL-1:<new-volume-id> --push
+```
+- Uploads go in 8MB parts. The gateway sits behind Cloudflare, which refuses any request over 100MB (HTTP 413).
+- The gateway ignores upload checksums (it accepted a deliberately wrong `x-amz-checksum-sha256`), so each file is checked by its ETag instead. The pod checks its own copy against Hugging Face's SHA-256 and computes the multipart ETag from it (the MD5 of the parts' MD5s). That must match the ETag the target lists, which also catches a `CompleteMultipartUpload` that reports failure after the object landed.
+- Files over `--max-size` (default 5GB, which leaves out the 20.5GB backbone) are skipped. Upload those from a machine that has them: `MANIFEST=<file listing just them> ./populate-volume.sh <DC> <volume-id> --keep-local`.
+- The job logs to `push.log` on the source volume.
+
 **Across datacenters:**
 
 1. It reads `models.txt` and gets each file's SHA-256 from Hugging Face (the `X-Linked-Etag` header).
