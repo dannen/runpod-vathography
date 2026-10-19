@@ -28,11 +28,14 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 
 - **Pod** `vathography-comfyui`, **L40S 48GB** ($1.09/hr) in US-MO-1. The A40 ($0.59) was the first choice but had no CUDA 13 hosts.
   - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:621c97b` (vathopy `1898257`: adds the five-row map list with arrow keys, ◀ ▶ step buttons on every slider, **Save local**, the map name above the picture, new GUI starting values), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`. Built, pushed and set on the pod with `--update` on 2026-10-19 while the pod was **stopped**, so it hasn't run yet: check it (password 401/200 on both ports, the GUI's new buttons) on the next start.
-  - Pod is stopped (2026-10-19). Starting a stopped pod can fail if its host has no free GPU; then `--recreate` (see `build.md`).
+  - **Pod deleted** (2026-10-19) after RunPod reported a critical error on its host; recreating it failed for lack of L40S stock in US-MO-1. Newest image `2363fa3` (vathopy `e14103f`, adds the Cycles fine slider), built and pushed, never run. Starting a stopped pod can fail if its host has no free GPU; then `--recreate` (see `build.md`).
   - ComfyUI: `https://<pod-id>-8188.proxy.runpod.net` (password, via nginx). `pull.sh` finds the pod ID. Verified: ComfyUI 0.41.3, torch cu130, `comfy_kitchen backend cuda: available: True`.
   - vathopy GUI: `https://<pod-id>-8770.proxy.runpod.net` (password). Reads `/workspace/output/vathography/`, saves to `/workspace/favorites/`, your palettes from `/workspace/palettes/`. Verified through the proxy: 401 without the password, list, full render (213 ms), save and download.
   - Earlier images: `061a155` (vathopy `8d67604`; verified 2026-10-18: ComfyUI and the GUI 401 without the password and 200 with it, the 2496 workflows, palettes from `palettes/`, `podauth` in the tools), `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`, `c1eb935`, `ed23784` (`502c471` was built but never rolled).
-- **Volume** `vathography-storage` (50GB, US-MO-1): the 10 models (26.38GB), plus `output/`, `input/` and `favorites/`. `input/` and `output/` were purged on 2026-10-18 after everything was pulled.
+- **Volumes** (2026-10-19), 30GB each, the new default (`--volume-size`; models 26.38GB):
+  - US-MO-1: seeded, by server-side `copy-object` from the original 50GB volume, which was then deleted along with its old outputs and favorites.
+  - US-NE-1: seeded by `copy-volume.py` (CPU pod). Has RTX PRO 6000 MIG 24/48GB, not yet seen with CUDA 13.
+  - US-IL-1: empty (no CPU or A5000 supply to seed it from on 2026-10-19).
 - **Local tools:**
   - `batch.sh DIR`: resizes locally (`--resize 2496|4200`, default 2496, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
   - `pull.sh`: finds the running pod (cached 30 min) and downloads results to `~/Pictures/vathography/depth/`, plus the GUI's `favorites/` saves to `~/Pictures/vathography/favorites/`. Verified against the volume's S3 checksums (MD5, SHA-256), falls back to S3 if the pod can't deliver, never overwrites (`-001`), keeps MD5-aware records (ComfyUI reuses names after deletions). Also `--from-volume`, `--match`, `--verify-existing`, `--clear-volume`, `--clear-inputs`.

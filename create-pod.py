@@ -25,7 +25,7 @@ mutate an existing pod by default:
 Usage:
     # One-time: create the dedicated network volume
     python3 create-pod.py --create-volume --volume-name vathography-storage \\
-        --volume-size 50 --datacenter <DC>
+        --volume-size 30 --datacenter <DC>
 
     # Create the pod (idempotent by name; reports existing pod if present)
     python3 create-pod.py --name vathography-comfyui \\
@@ -189,7 +189,8 @@ def main():
 
     parser.add_argument("--create-volume", action="store_true", help="Create a network volume and exit")
     parser.add_argument("--volume-name", default="vathography-storage", help="Volume name (default: vathography-storage)")
-    parser.add_argument("--volume-size", type=int, default=50, help="Volume size GB (default: 50)")
+    parser.add_argument("--volume-size", type=int, default=30,
+                        help="Volume size GB (default: 30; the models take 26.4GB, and a volume can grow later but not shrink)")
 
     args = parser.parse_args()
 

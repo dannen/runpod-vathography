@@ -74,7 +74,7 @@ All nodes on the main canvas are pinned so they can't be dragged by accident (ri
    ```
 2. **Create the volume** in that datacenter:
    ```bash
-   ./create-pod.sh --create-volume --datacenter <DC>   # vathography-storage, 50GB
+   ./create-pod.sh --create-volume --datacenter <DC>   # vathography-storage, 30GB
    ```
 3. **Seed the models** from this machine:
    ```bash
@@ -97,7 +97,7 @@ All nodes on the main canvas are pinned so they can't be dragged by accident (ri
    The script only accepts hosts with CUDA 13.0 drivers (`--allowed-cuda-versions`, default `13.0`). If it can't find stock, check that filter first. Add `--env SKIP_MODEL_DOWNLOAD=true` if step 3 is still uploading.
 6. Open `https://<pod-id>-8188.proxy.runpod.net` and log in with the same user and password as the vathopy GUI (see **Passwords** below). The workflows are in the **Workflows** sidebar.
 
-Pods are billed while running. Stop the pod when you're done, and the volume keeps everything (50GB is about $3.50/month).
+Pods are billed while running. Stop the pod when you're done, and the volume keeps everything (30GB is about $2.10/month). 30GB leaves about 3.6GB beside the 26.4GB of models for inputs and results, so clear the volume after pulling (`./pull.sh --clear-volume`); `--volume-size` makes it bigger, and a volume can grow later but not shrink.
 
 ## vathopy GUI on the pod
 
@@ -176,8 +176,8 @@ Options, from `./check-gpus.sh` on 2026-10-18 (stock changes hourly):
 **Prefer US-CA-2.** It has A5000 and 4090 cards, plus 48–96GB fallbacks (RTX 6000 Ada, A100, RTX PRO 6000), and an S3 gateway. US-IL-1's S3 gateway had an outage on 2026-10-01.
 
 **Moving a setup from US-MO-1** (which has no 24GB cards with network-volume support). Recommended order, not done yet:
-1. Create a new 50GB volume in US-CA-2. Before seeding it, start an A5000 pod on it with `--env SKIP_MODEL_DOWNLOAD=true`, which proves A5000 hosts there have CUDA 13 drivers (the A40 attempt failed on that).
-2. Seed it with `./populate-volume.sh US-CA-2 <new-volume-id>`, about 26GB.
+1. Create a new 30GB volume in US-CA-2. Before seeding it, start an A5000 pod on it with `--env SKIP_MODEL_DOWNLOAD=true`, which proves A5000 hosts there have CUDA 13 drivers (the A40 attempt failed on that).
+2. Seed it with `./copy-volume.py --from US-MO-1:<old-volume-id> --to US-CA-2:<new-volume-id>`, or from this machine with `./populate-volume.sh US-CA-2 <new-volume-id>`, about 26GB.
 3. Run `bench.py` on the A5000 at 1280, 2500 and 3500 px to confirm VRAM and speed.
 4. Only then delete the L40S pod and the US-MO-1 volume, after pulling anything still on it (`./pull.sh --from-volume`).
 

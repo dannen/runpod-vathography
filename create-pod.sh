@@ -3,7 +3,7 @@
 # create its dedicated network volume.
 #
 # Usage:
-#   ./create-pod.sh --create-volume --volume-name vathography-storage --volume-size 50 --datacenter <DC>
+#   ./create-pod.sh --create-volume --volume-name vathography-storage --volume-size 30 --datacenter <DC>
 #   ./create-pod.sh --name vathography-comfyui --image user/vathography-comfyui:latest \
 #       --gpu-type-id "NVIDIA RTX PRO 6000 Blackwell Server Edition" --datacenter <DC> --network-volume-id <id>
 #   ./create-pod.sh --name vathography-comfyui --image user/vathography-comfyui:latest --update
