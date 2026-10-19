@@ -24,10 +24,11 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 ## Current state (2026-10-18)
 
 - **Pod** `vathography-comfyui`, **L40S 48GB** ($1.09/hr) in US-MO-1. The A40 ($0.59) was the first choice but had no CUDA 13 hosts.
-  - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:c1eb935` (vathopy `5bee66e`), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`.
+  - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:ed23784` (vathopy `9769d79`), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`.
+  - vathopy has moved on since that image (creative focus, MIST, highlights, reach, lean/angle, lock, Download PNG): rebuild and roll (`build.md`) to bring them to the pod's GUI.
   - ComfyUI: `https://<pod-id>-8188.proxy.runpod.net` (no auth). `pull.sh` finds the pod ID. Verified: ComfyUI 0.41.3, torch cu130, `comfy_kitchen backend cuda: available: True`.
   - vathopy GUI: `https://<pod-id>-8770.proxy.runpod.net` (password). Reads `/workspace/output/vathography/`, saves to `/workspace/favorites/`. Verified through the proxy: 401 without the password, list, full render (213 ms), save and download.
-  - Earlier images: `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`.
+  - Earlier images: `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`, `c1eb935`.
 - **Volume** `vathography-storage` (50GB, US-MO-1): the 10 models (26.38GB), plus `output/`, `input/` and `favorites/`. `input/` and `output/` were purged on 2026-10-18 after everything was pulled.
 - **Local tools:**
   - `batch.sh DIR`: resizes locally (`--resize 2500|4200`, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
