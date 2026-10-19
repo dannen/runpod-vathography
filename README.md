@@ -14,6 +14,7 @@ Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-o
 | `start.sh` | Entrypoint: wait for the volume, symlink dirs onto it, download missing models, seed workflows, run ComfyUI |
 | `models.txt` | Model manifest (subdir + URL). **The only list of models.** `start.sh` and `populate-volume.sh` both read it |
 | `populate-volume.sh` | Seeds the volume from this machine through RunPod's S3 gateway. `--dry-run` shows the plan |
+| `copy-volume.py` | Seeds a new volume from an already-seeded one, RunPod to RunPod, on a throwaway CPU (or GPU) pod; each file checked against Hugging Face's SHA-256 |
 | `workflows/image_marigold_v2_*.json` | The three official Comfy-Org templates, unmodified |
 | `workflows/vathography_*.json` | Generated from those by `make_workflows.py`: input resize plus 32-bit float EXR output. Use these |
 | `make_workflows.py` | Regenerates `vathography_*.json`. Every edit is asserted, so a changed upstream template fails loudly |
@@ -81,6 +82,11 @@ All nodes on the main canvas are pinned so they can't be dragged by accident (ri
    ./populate-volume.sh <DC> <volume-id>             # ~26GB, smallest file first
    ```
    You can skip this step, because the pod downloads anything missing on first boot. Pods have been seen downloading from Hugging Face at under 1MB/s, which would take many hours for 26GB.
+
+   **Or, if you already have a seeded volume in another datacenter,** copy it RunPod to RunPod instead (see [Seeding from another volume](#seeding-from-another-volume)):
+   ```bash
+   ./copy-volume.py --from <seeded DC>:<volume-id> --to <DC>:<volume-id>
+   ```
 4. **Build and push the image.** See [`build.md`](build.md).
 5. **Create the pod:**
    ```bash
@@ -113,6 +119,24 @@ The image also runs the `vathopy` web GUI (palettes including your own, cycles, 
 - **The tools log in too:** `batch.sh`, `pull.sh` and `bench.py` send the password on requests to the pod's proxy URLs (only there, never to RunPod's API), from `VATHOPY_GUI_AUTH` or the file `~/.api/runpod/vathopy-gui.auth` (another file: `VATHOPY_GUI_AUTH_FILE`); see `podauth.py`. Without it they stop with a message saying where to put it.
 - **Logs and control:** on the pod, `/tmp/vathopy-gui.log`. It's restarted if it exits. Set `VATHOPY_GUI=off` to not start it.
 - **Building:** it has its own venv (`/opt/vathopy`), so its numpy/OpenCV/OpenEXR can't affect ComfyUI's. Run `./sync-vathopy.sh` before `docker build` (see `build.md`). The image records the source commit in `/opt/vathopy/VATHOPY_COMMIT`.
+
+## Seeding from another volume
+
+`copy-volume.py` seeds a new volume from one that's already seeded, without the 26GB passing through your machine. Useful when you move datacenters (a GPU type sold out, or a host fault), or keep volumes in several so a pod can start wherever there's stock.
+
+```bash
+./copy-volume.py --from US-MO-1:<seeded-volume-id> --to US-NE-1:<new-volume-id>
+./copy-volume.py --from US-MO-1:<seeded-volume-id> --to US-IL-1:<new-volume-id> --gpu "NVIDIA RTX A5000"
+```
+
+1. It reads `models.txt` and gets each file's SHA-256 from Hugging Face (the `X-Linked-Etag` header).
+2. It starts a throwaway pod with the **target** volume at `/workspace`. By default that's a 2 vCPU CPU pod (~$0.06/hr), trying a few CPU instance types (`--cpu cpu3c-2-4` picks one). `--gpu TYPE` uses a GPU pod instead, for datacenters with no CPU supply.
+3. On the pod, a short job `get-object`s each file from the **source** volume's S3 gateway into `/workspace/models/`, smallest first, and checks its SHA-256 (3 tries per file). Files already there and correct are skipped, so rerunning resumes. It logs to `/workspace/seed.log` and leaves `seed.done` or `seed.failed`.
+4. The script follows `seed.log` through the target's S3 gateway and **deletes the pod** when the job ends: the pod holds your S3 key in its env. Ctrl-C (or `--no-follow`) leaves the pod running, so delete it yourself once `seed.done` appears.
+
+Both datacenters need RunPod's S3 API. The source is read over it, and the target's is used to follow the log. CPU pods are created through the GraphQL API (`deployCpuPod`), because the REST `/v1/pods` endpoint rejects some datacenters (US-NE-1 in October 2026).
+
+Measured US-MO-1 → US-NE-1 (2026-10-19): 42–50 MB/s on most files. The source gateway dipped to 3 MB/s for a while, and one attempt at the 20.5GB backbone failed (the retry ran at 30 MB/s). It took ~24 minutes and cost ~$0.03. A partly downloaded file doesn't show up in S3 listings, so the log is quiet while the backbone copies.
 
 ## GPU and VRAM
 
