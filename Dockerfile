@@ -61,6 +61,13 @@ RUN ./venv/bin/pip install --no-input \
     && ./venv/bin/pip install --no-input --prefer-binary -r requirements.txt \
     && ./venv/bin/python -c "import torch; assert torch.__version__.startswith('${TORCH_VERSION}'), torch.__version__"
 
+# ───────────────────── S3 client ─────────────────────
+# For MODELS_S3 (start.sh): copy the models from a seeded network volume's S3
+# gateway instead of Hugging Face, e.g. for a pod without a network volume.
+RUN python3 -m venv /opt/awscli \
+    && /opt/awscli/bin/pip install --no-input --prefer-binary awscli \
+    && /opt/awscli/bin/aws --version
+
 # ───────────────────── vathopy GUI ─────────────────────
 # The vathopy web GUI (sliders, palettes, contours) on port 8770, started by
 # start.sh next to ComfyUI and reading ComfyUI's output/vathography/ depth

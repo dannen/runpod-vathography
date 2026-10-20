@@ -34,6 +34,8 @@ In a datacenter without a network volume, give the pod its own volume instead. T
   --env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"
 ```
 
+To copy the models from a seeded network volume instead of Hugging Face (any datacenter can read any volume's S3 gateway), add `--env MODELS_S3=<DC>:<volume id>` and the RunPod S3 key as `--env AWS_ACCESS_KEY_ID=...` and `--env AWS_SECRET_ACCESS_KEY=...`. A file that fails to copy falls back to Hugging Face. The key then sits in the pod's env and works for every volume, so use this only when Hugging Face is slow, and recreate the pod without it afterwards.
+
 Quick check without a GPU (import-level only):
 ```bash
 docker run --rm --entrypoint ./venv/bin/python YOUR_DOCKERHUB_USER/vathography-comfyui:latest \

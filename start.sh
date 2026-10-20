@@ -13,6 +13,9 @@
 # 4. Download anything in models.txt that's missing from the volume. Every
 #    boot checks, but existing files are skipped, so once the volume is
 #    seeded this is a fast no-op. SKIP_MODEL_DOWNLOAD=true skips it
+#    MODELS_S3=<DC>:<volume id> (plus AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY,
+#    a RunPod S3 key) copies each missing file from that seeded network
+#    volume's S3 gateway instead, falling back to Hugging Face if it fails.
 #    entirely (e.g. while populate-volume.sh --s3 is still uploading).
 # 5. Seed the bundled workflows into the Workflows sidebar.
 # 6. Start the vathopy GUI (port 8770) in the background.
@@ -66,6 +69,16 @@ if [[ "${SKIP_MODEL_DOWNLOAD:-false}" == "true" ]]; then
   echo "[boot] SKIP_MODEL_DOWNLOAD=true — not checking models.txt"
 else
   echo "[boot] checking models against models.txt"
+  # One file from a seeded network volume's S3 gateway (MODELS_S3=<DC>:<volume id>).
+  # The gateway wants the datacenter in lower case. get-object, not "aws s3 cp":
+  # the gateway rejects HeadObject.
+  from_s3() {
+    local dc="${MODELS_S3%%:*}" vol="${MODELS_S3#*:}"
+    dc="${dc,,}"
+    echo " • $(basename "$2" .partial): copying from $MODELS_S3"
+    /opt/awscli/bin/aws --endpoint-url "https://s3api-$dc.runpod.io" --region "$dc" --cli-read-timeout 600 \
+      s3api get-object --bucket "$vol" --key "$1" "$2" > /dev/null
+  }
   while read -r -u 3 subdir url; do
     [[ -z "$subdir" || "$subdir" == \#* ]] && continue
     target="$VOLUME_ROOT/models/$subdir/$(basename "$url")"
@@ -73,10 +86,14 @@ else
       echo " • $(basename "$target") exists - skip"
       continue
     fi
-    echo " • downloading $(basename "$target")"
     mkdir -p "$(dirname "$target")"
     # .partial + mv so a killed transfer can't pass for a complete file.
-    curl -L --fail --progress-bar --show-error -o "${target}.partial" "$url"
+    if [[ -n "${MODELS_S3:-}" && -n "${AWS_ACCESS_KEY_ID:-}" ]] && from_s3 "models/$subdir/$(basename "$url")" "${target}.partial"; then
+      echo " • $(basename "$target") copied from $MODELS_S3"
+    else
+      echo " • downloading $(basename "$target")"
+      curl -L --fail --progress-bar --show-error -o "${target}.partial" "$url"
+    fi
     mv "${target}.partial" "$target"
   done 3< "$COMFY_ROOT/models.txt"
 fi
