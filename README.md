@@ -23,7 +23,7 @@ Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-o
 | `build.md` | Local build and push checklist |
 | `sync-vathopy.sh` | Copies [`vathopy`](https://github.com/dannen/vathopy) from a checkout next to this one (`../vathopy`) into `vathopy-src/` (gitignored) for the image's GUI layer; run before every build |
 | `batch.py` / `batch.sh` | Runs a folder of photos through the pod at the recommended size, waits, then runs `pull.sh`. Needs Pillow |
-| `pull.py` / `pull.sh` | Downloads finished results from the pod's job history into `~/Pictures/vathography/depth`. Finds the running pod itself (cached 30 min) |
+| `pull.py` / `pull.sh` | Downloads finished results from the pod's job history into `~/Pictures/vathography/depth`, plus crops saved in the pod's GUI (`<map>-cropped.exr`). Finds the running pod itself (cached 30 min) |
 | `bench.py` | Phase 1 benchmark: runs depth/normals/albedo on the pod at given sizes, records time and peak VRAM, saves the EXRs |
 | `podauth.py` | The pod's password (ComfyUI and the GUI share it) for `batch.py`, `pull.py` and `bench.py`: sent to the pod's proxy URLs only |
 | `AGENTS.md` | Decisions, current state and open items, for an agent picking this up |

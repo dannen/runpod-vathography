@@ -12,6 +12,13 @@ against the network volume's own checksums. Python 3 stdlib (+ aws CLI).
     ./pull.sh --clear-volume       # delete results from the volume once safely pulled
     ./pull.sh --clear-inputs       # delete uploaded photos (input/) from the volume
 
+Crops: the vathopy GUI's Crop section saves <map>-cropped.exr next to the depth maps on the pod
+(output/vathography/), outside ComfyUI's history. Pulling from the pod fetches those too, named
+after the local name of the map they were cut from (photo_depth_2496px-cropped.exr), with the
+same checks and never-overwrite rule; a crop saved again with new contents arrives as -001, ...
+They're listed from the volume, or with --no-verify from the pod's GUI (port 8770).
+--from-volume pulls them like any other EXR under output/.
+
 Every pull (from the pod or --from-volume) also downloads what the vathopy GUI saved on the
 pod: favorites/ on the volume (PNGs and looks/*.json), into ~/Pictures/vathography/favorites
 (--favourites-out), with the same checks and never-overwrite rule and its own .pulled.json and
@@ -466,7 +473,7 @@ def pull_from_pod(args, out, manifest, manifest_path):
         for j in found:
             mark = f"pulled -> {pulled[j['prompt_id']]}" if j["prompt_id"] in pulled else "new"
             print(f"  {target_name(j):60s} {mark}")
-        return 0
+        return pull_crops(args, url, pod_id, out, manifest, manifest_path)
 
     # Record which volume file each earlier pull came from (manifests written
     # before .outputs existed get filled in here).
@@ -476,7 +483,7 @@ def pull_from_pod(args, out, manifest, manifest_path):
     if not new:
         if out.exists():
             manifest_path.write_text(json.dumps(manifest, indent=1))
-        return 0
+        return pull_crops(args, url, pod_id, out, manifest, manifest_path)
 
     refs = vol = None
     if not args.no_verify:
@@ -528,6 +535,77 @@ def pull_from_pod(args, out, manifest, manifest_path):
     print(f"Done: {len(new) - failed - gone} pulled into {out}"
           + (f", {gone} gone from the volume" if gone else "")
           + (f", {failed} failed (rerun to retry)" if failed else "") + ".")
+    return max(1 if failed else 0, pull_crops(args, url, pod_id, out, manifest, manifest_path, vol, refs))
+
+
+CROP_SUFFIX = "-cropped.exr"
+
+
+def crop_name(manifest, key):
+    """Local name for a crop: the local name of the map it was cut from plus -cropped
+    (photo_depth_2496px-cropped), else the pod's own name."""
+    stem = Path(key).name[: -len(CROP_SUFFIX)]
+    src = manifest.get(".outputs", {}).get(str(Path(key).parent / f"{stem}.exr"))
+    return (Path(src).stem if src else stem) + "-cropped"
+
+
+def pull_crops(args, url, pod_id, out, manifest, manifest_path, vol=None, refs=None):
+    """The vathopy GUI's crops (<map>-cropped.exr in output/vathography/); see the docstring."""
+    if not args.no_verify and refs is None:
+        try:
+            vol = open_volume(args, pod_id)
+            refs = vol.list_exrs()
+        except (RuntimeError, SystemExit) as e:
+            print(f"Crops: can't reach the volume to verify them ({e}); skipped (--no-verify pulls them unchecked).")
+            return 0
+    if refs is not None:
+        keys = sorted(k for k in refs if k.startswith("output/vathography/") and k.endswith(CROP_SUFFIX))
+    else:
+        try:
+            maps = json.loads(fetch(url.replace("-8188.", "-8770.") + "/api/maps", timeout=30))["maps"]
+        except Exception as e:
+            print(f"Crops: can't list them from the pod's GUI ({e}); skipped.")
+            return 0
+        keys = [f"output/vathography/{m}" for m in maps if m.endswith(CROP_SUFFIX)]
+    md5s = manifest.setdefault(".outputs_md5", {})
+
+    def pulled(k, data=None):
+        """Already pulled: the recorded MD5 matches the volume's (or the downloaded data's)."""
+        md5 = refs[k]["md5"] if refs is not None else (hashlib.md5(data).hexdigest() if data is not None else None)
+        return md5 is not None and md5s.get(k) == md5 and (out / manifest[".outputs"].get(k, "")).is_file()
+
+    new = [k for k in keys if refs is None or not pulled(k)]
+    print(f"Crops: {len(keys)} on the pod" + (f", {len(new)} not pulled yet." if refs is not None else "."))
+    if args.list:
+        for k in keys:
+            mark = "new" if refs is None or k in new else f"pulled -> {manifest['.outputs'].get(k)}"
+            print(f"  {crop_name(manifest, k):60s} {mark}")
+        return 0
+    failed = done = same = 0
+    for k in new:
+        base = crop_name(manifest, k)
+        ref = refs.get(k) if refs is not None else None
+        f = {"filename": Path(k).name, "subfolder": "vathography", "type": "output"}
+        got = download_checked(lambda: (fetch(view_url(url, f), timeout=120), None), ref, base)
+        if got is None and vol is not None:
+            print(f"  {base}: trying the volume through S3 instead")
+            got = download_checked(lambda: vol.get(k), ref, base)
+        if got is None:
+            print(f"  FAILED {base}: not saved")
+            failed += 1
+            continue
+        if refs is None and pulled(k, got[0]):
+            same += 1                                  # unchanged since the last pull
+            continue
+        out.mkdir(parents=True, exist_ok=True)
+        save(out, base, got[0], manifest, k, verified=ref is not None)
+        manifest_path.write_text(json.dumps(manifest, indent=1))
+        done += 1
+    if done:
+        write_sums(out, manifest)
+    if new:
+        print(f"Crops: {done} pulled" + (f", {same} unchanged" if same else "")
+              + (f", {failed} failed (rerun to retry)" if failed else "") + ".")
     return 1 if failed else 0
 
 
