@@ -15,6 +15,25 @@ docker push YOUR_DOCKERHUB_USER/vathography-comfyui:latest
 docker push YOUR_DOCKERHUB_USER/vathography-comfyui:$(git rev-parse --short HEAD 2>/dev/null || echo local)
 ```
 
+### cu128 variant (hosts with older drivers)
+
+The default image needs a host with CUDA 13 (driver >= 580), and those are scarce. The cu128 build runs on CUDA 12.8+ hosts: the int8 backbone runs on comfy-kitchen's eager (plain PyTorch) backend instead of its CUDA kernels. Its depth maps match the cu130 build's to within about 1%, about as much as resizing the input differently changes them. Tag it `-cu128`: `create-pod.py` then accepts CUDA 12.8, 12.9 and 13.0 hosts by default.
+
+```bash
+docker build --no-cache \
+  --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 --build-arg CUDA_TAG=cu128 \
+  -t YOUR_DOCKERHUB_USER/vathography-comfyui:$(git rev-parse --short HEAD)-cu128 .
+docker push YOUR_DOCKERHUB_USER/vathography-comfyui:$(git rev-parse --short HEAD)-cu128
+```
+
+In a datacenter without a network volume, give the pod its own volume instead. The models then download from Hugging Face on first boot, about 26GB, and are lost with the pod:
+
+```bash
+./create-pod.sh --image YOUR_DOCKERHUB_USER/vathography-comfyui:<sha>-cu128 \
+  --datacenter <DC> --gpu-type-id "NVIDIA RTX A5000" --pod-volume-gb 50 \
+  --env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"
+```
+
 Quick check without a GPU (import-level only):
 ```bash
 docker run --rm --entrypoint ./venv/bin/python YOUR_DOCKERHUB_USER/vathography-comfyui:latest \

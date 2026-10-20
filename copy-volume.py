@@ -115,7 +115,7 @@ sleep infinity
 PUSH_PART = 8 << 20          # bytes per multipart part, as populate-volume.sh
 
 PUSH_JOB = r"""
-import base64, hashlib, json, os, subprocess, time
+import base64, hashlib, json, os, subprocess, threading, time
 RUN, DC, VOL, MAX = "__RUN__", "__DST_DC_LC__", "__DST_VOL__", __MAX__
 PART = __PART__
 FILES = json.loads(base64.b64decode("__FILES__"))
@@ -150,6 +150,23 @@ def target_etag(key):
         time.sleep(10)
     return None, None
 
+def netmon():
+    # the pod has no shell access: log its network rates from /proc/net/dev instead
+    def counters():
+        rx = tx = 0
+        for line in open("/proc/net/dev").readlines()[2:]:
+            name, data = line.split(":", 1)
+            if name.strip() != "lo":
+                f = data.split(); rx += int(f[0]); tx += int(f[8])
+        return rx, tx, time.time()
+    prev = counters()
+    while True:
+        time.sleep(60)
+        cur = counters(); dt = cur[2] - prev[2]
+        log(f"net rx {(cur[0] - prev[0]) / dt / 1e6:.1f} MB/s, tx {(cur[1] - prev[1]) / dt / 1e6:.1f} MB/s")
+        prev = cur
+
+threading.Thread(target=netmon, daemon=True).start()
 log(f"start {RUN} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
 fail = skipped = 0
 for key, want in FILES:
@@ -170,11 +187,18 @@ for key, want in FILES:
         r = subprocess.run(AWS + ["s3", "cp", "--only-show-errors", path, f"s3://{VOL}/{key}"], capture_output=True, text=True)
         dt = max(time.time() - t0, 1)
         got = target_etag(key)
+        if r.returncode != 0 and got != (size, etag):
+            # a timed-out CompleteMultipartUpload can still land server-side: wait for it
+            for _ in range(30):
+                time.sleep(30)
+                got = target_etag(key)
+                if got == (size, etag):
+                    break
         if got == (size, etag):
             note = "" if r.returncode == 0 else " (the upload call failed, but the object landed)"
             log(f"ok {key} {size} bytes in {dt:.0f} s ({size / dt / 1e6:.0f} MB/s), ETag OK{note}")
             ok = True; break
-        log(f"attempt {attempt} {key}: target has {got}, want ({size}, {etag}); {(r.stderr.strip().splitlines() or [''])[-1][:150]}")
+        log(f"attempt {attempt} {key}: target has {got}, want ({size}, {etag}); {(r.stderr.strip().splitlines() or [''])[-1][-300:]}")
         time.sleep(10)
     if not ok:
         fail += 1

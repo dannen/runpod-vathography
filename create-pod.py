@@ -124,6 +124,7 @@ def create_pod(
     ports: list[str] = None,
     env: dict = None,
     allowed_cuda_versions: list[str] = None,
+    pod_volume_gb: int = 0,
 ) -> dict:
     body = {
         "name": name,
@@ -133,26 +134,31 @@ def create_pod(
         "gpuCount": 1,
         "dataCenterIds": [datacenter],
         "dataCenterPriority": "custom",
-        "networkVolumeId": network_volume_id,
-        "volumeInGb": 0,  # persistence comes from the attached network volume, not a pod volume
+        # persistence comes from the attached network volume, or else from a pod volume
+        # (--pod-volume-gb), which lives and dies with the pod
+        "volumeInGb": 0 if network_volume_id else pod_volume_gb,
         "volumeMountPath": volume_mount_path,
         "containerDiskInGb": container_disk_gb,
         "ports": ports or ["8188/http", "8770/http", "22/tcp"],
         "env": env or {},
     }
+    if network_volume_id:
+        body["networkVolumeId"] = network_volume_id
     if allowed_cuda_versions:
         body["allowedCudaVersions"] = allowed_cuda_versions
     return rest("POST", "/pods", body=body)
 
 
 def create_pod_graphql(name, image, gpu_type_id, datacenter, network_volume_id, container_disk_gb,
-                       volume_mount_path, ports, env, allowed_cuda_versions) -> dict:
+                       volume_mount_path, ports, env, allowed_cuda_versions, pod_volume_gb=0) -> dict:
     """The same pod through GraphQL podFindAndDeployOnDemand, for datacenters the REST
     schema doesn't list yet. One GPU type per call."""
     inp = {"cloudType": "SECURE", "gpuCount": 1, "gpuTypeId": gpu_type_id, "dataCenterId": datacenter,
-           "networkVolumeId": network_volume_id, "volumeInGb": 0, "volumeMountPath": volume_mount_path,
+           "volumeInGb": 0 if network_volume_id else pod_volume_gb, "volumeMountPath": volume_mount_path,
            "containerDiskInGb": container_disk_gb, "imageName": image, "name": name,
            "ports": ",".join(ports or []), "env": [{"key": k, "value": v} for k, v in (env or {}).items()]}
+    if network_volume_id:
+        inp["networkVolumeId"] = network_volume_id
     if allowed_cuda_versions:
         inp["allowedCudaVersions"] = allowed_cuda_versions
     body = json.dumps({"query": "mutation($input: PodFindAndDeployOnDemandInput) "
@@ -218,9 +224,14 @@ def main():
     parser.add_argument("--volume-mount-path", default="/workspace", help="Mount path for the network volume (default: /workspace)")
     parser.add_argument("--ports", default="8188/http,8770/http,22/tcp",
                         help="Comma-separated ports (default: 8188/http,8770/http,22/tcp: ComfyUI, the vathopy GUI, SSH)")
-    parser.add_argument("--allowed-cuda-versions", default="13.0",
-                         help="Comma-separated host CUDA versions to accept (default: 13.0 — the image's "
-                              "cu130 torch needs driver >= 580). Pass '' to allow any.")
+    parser.add_argument("--allowed-cuda-versions",
+                         help="Comma-separated host CUDA versions to accept. Default: 13.0 for the cu130 image "
+                              "(its torch needs driver >= 580), 12.8,12.9,13.0 for an image tagged *-cu128. "
+                              "Pass '' to allow any.")
+    parser.add_argument("--pod-volume-gb", type=int, default=0,
+                        help="No network volume: give the pod its own volume of this size at --volume-mount-path "
+                             "instead (any datacenter; models download from Hugging Face on first boot, and "
+                             "everything on it is lost when the pod is deleted). ~50 is enough.")
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                          help="Pod environment variable (repeatable). Replaces the pod's full env list.")
 
@@ -303,6 +314,8 @@ def main():
 
     dcs = [d.strip() for d in (args.datacenter or "").split(",") if d.strip()]
     gpus = [g.strip() for g in (args.gpu_type_id or "").split(",") if g.strip()]
+    if args.pod_volume_gb and args.network_volume_id:
+        parser.error("--pod-volume-gb and --network-volume-id are mutually exclusive")
     if args.network_volume_id and len(dcs) > 1:
         parser.error("--network-volume-id goes with a single --datacenter (with a list, each datacenter's volume is found by --volume-name)")
 
@@ -320,12 +333,16 @@ def main():
         if not gpus or not dcs:
             parser.error("--gpu-type-id and --datacenter are required to create a new pod")
 
+    if args.allowed_cuda_versions is None:
+        args.allowed_cuda_versions = "12.8,12.9,13.0" if args.image.endswith("-cu128") else "13.0"
     cuda = [v.strip() for v in args.allowed_cuda_versions.split(",") if v.strip()]
     pod = None
     for dc in dcs:
         # Fail fast rather than deploying a pod whose /workspace never mounts.
         try:
-            if args.network_volume_id:
+            if args.pod_volume_gb:
+                vol = {"id": None, "name": f"pod volume {args.pod_volume_gb}GB"}
+            elif args.network_volume_id:
                 vol = get_network_volume(args.network_volume_id)
                 if vol.get("dataCenterId") != dc:
                     print(f"ERROR: network volume {args.network_volume_id} is in datacenter "
@@ -342,7 +359,7 @@ def main():
             sys.exit(1)
         common = dict(name=args.name, image=args.image, datacenter=dc, network_volume_id=vol["id"],
                       container_disk_gb=args.container_disk_gb, volume_mount_path=args.volume_mount_path,
-                      ports=ports_list, env=env_dict, allowed_cuda_versions=cuda)
+                      ports=ports_list, env=env_dict, allowed_cuda_versions=cuda, pod_volume_gb=args.pod_volume_gb)
         for gpu in gpus:
             try:
                 pod = create_pod(gpu_type_id=gpu, **common)
@@ -356,7 +373,7 @@ def main():
                 if not pod:
                     print(f"  {dc} / {gpu}: {msg.strip()[:160]}")
                     continue
-            print(f"  {dc} / {gpu}: created (volume {vol.get('name')} {vol['id']})")
+            print(f"  {dc} / {gpu}: created (volume {vol.get('name')}{' ' + vol['id'] if vol['id'] else ''})")
             break
         if pod:
             break

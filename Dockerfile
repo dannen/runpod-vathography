@@ -6,14 +6,22 @@
 # (2026-09-12, first released in v0.36.0: MarigoldV2PostProcess), and the
 # three official templates in workflows/ use core nodes only. The one custom
 # node is ours (custom_nodes/vathography, ~60 lines).
-FROM nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04
+#
+# Two builds (see build.md): the default cu130, and cu128 for hosts with older
+# drivers (CUDA 12.8+):
+#   --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 --build-arg CUDA_TAG=cu128
+ARG BASE_IMAGE=nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04
+FROM ${BASE_IMAGE}
 
 # v0.41.3 = newest release as of 2026-10-18. Marigold V2 needs >= v0.36.0.
 ARG COMFYUI_REF=v0.41.3
-# cu130 is REQUIRED: comfy/quant_ops.py disables comfy-kitchen's CUDA backend
-# when torch.version.cuda < 13, and that backend runs the int8_convrot
-# kernels the Marigold V2 backbone uses. cu130 needs host driver >= 580, so create-pod.py passes
-# allowedCudaVersions=["13.0"].
+# cu130 gets comfy-kitchen's CUDA kernels for the int8_convrot backbone
+# (comfy/quant_ops.py disables that backend when torch.version.cuda < 13), but
+# needs host driver >= 580, so create-pod.py passes allowedCudaVersions=["13.0"].
+# cu128 runs the same backbone on comfy-kitchen's eager (plain PyTorch) backend:
+# same depth maps (within ~1%, the same as resizing the input differently), and
+# it runs on far more hosts. Measured on a 16GB RTX 4060 Ti, which needs
+# ComfyUI's dynamic VRAM loading for the 20GB backbone: 2496 px in 24 s.
 ARG TORCH_VERSION=2.11.0
 ARG TORCHVISION_VERSION=0.26.0
 ARG TORCHAUDIO_VERSION=2.11.0
