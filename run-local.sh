@@ -14,7 +14,8 @@
 #   MODELS      ./models (this repo; models.txt files missing there are downloaded on first start)
 #   INPUT       ~/Pictures/vathography/input   photos uploaded to ComfyUI land here
 #   OUTPUT      ~/Pictures/vathography/depth   ComfyUI writes its EXRs here; the GUI reads them
-#   STATE       ~/.local/share/vathography-local   ComfyUI's user settings, the GUI's favorites/palettes
+#   FAVORITES   ~/Pictures/vathography/favorites   the GUI's saves (PNGs + looks/*.json)
+#   STATE       ~/.local/share/vathography-local   ComfyUI's user settings, the GUI's palettes
 #   COMFY_PORT  8188 (--port)       GUI_PORT  8771 (--gui-port)
 #   IMAGE       dannen/vathography-comfyui:latest-cu128       NAME  vathography-local
 # Files the container writes there are handed to you (PUID/PGID), not left owned by root.
@@ -24,7 +25,7 @@
 # relative to the file. It's read, not run. Example: run-local.conf.example.
 set -euo pipefail
 
-KEYS="NAME IMAGE MODELS INPUT OUTPUT STATE COMFY_PORT GUI_PORT"
+KEYS="NAME IMAGE MODELS INPUT OUTPUT FAVORITES STATE COMFY_PORT GUI_PORT"
 usage() { echo "usage: $0 [start] [--config FILE] [--port N] [--gui-port N] | stop [--config FILE] | logs" >&2; exit 2; }
 cmd=start config="" cli_comfy="" cli_gui=""
 while [[ $# -gt 0 ]]; do
@@ -51,7 +52,7 @@ if [[ -n "$config" ]]; then
     [[ " $KEYS " == *" $key "* ]] || { echo "ERROR: $config: unknown key $key (known: $KEYS)" >&2; exit 1; }
     val="${val#[\"\']}"; val="${val%[\"\']}"                         # optional quotes
     val="${val/#\~/$HOME}"; val="${val//\$HOME/$HOME}"; val="${val//\$\{HOME\}/$HOME}"
-    if [[ "$key" =~ ^(MODELS|INPUT|OUTPUT|STATE)$ && "$val" != /* ]]; then val="$(dirname "$config")/$val"; fi
+    if [[ "$key" =~ ^(MODELS|INPUT|OUTPUT|FAVORITES|STATE)$ && "$val" != /* ]]; then val="$(dirname "$config")/$val"; fi
     [[ -n "${!key:-}" ]] || printf -v "$key" '%s' "$val"
   done < "$config"
 fi
@@ -62,6 +63,7 @@ IMAGE=${IMAGE:-dannen/vathography-comfyui:latest-cu128}
 MODELS=${MODELS:-$PWD/models}
 INPUT=${INPUT:-$HOME/Pictures/vathography/input}
 OUTPUT=${OUTPUT:-$HOME/Pictures/vathography/depth}
+FAVORITES=${FAVORITES:-$HOME/Pictures/vathography/favorites}
 STATE=${STATE:-$HOME/.local/share/vathography-local}
 COMFY_PORT=${cli_comfy:-${COMFY_PORT:-8188}}
 GUI_PORT=${cli_gui:-${GUI_PORT:-8771}}      # 8770 is left for a vathopy GUI run outside the container
@@ -72,7 +74,7 @@ case "$cmd" in
 esac
 
 # Create the folders as you, or Docker creates them owned by root.
-mkdir -p "$MODELS" "$INPUT" "$OUTPUT" "$STATE"/{models,input,output/vathography}   # the last: mount points
+mkdir -p "$MODELS" "$INPUT" "$OUTPUT" "$FAVORITES" "$STATE"/{models,input,output/vathography,favorites}   # the last: mount points
 # Check the ports before touching a running container (its own ports don't count: it's restarted).
 ours=$(docker port "$NAME" 2>/dev/null | sed 's/.*://' || true)
 for port in "$COMFY_PORT" "$GUI_PORT"; do
@@ -84,6 +86,7 @@ docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" --gpus all \
   -v "$STATE:/workspace" -v "$MODELS:/workspace/models" \
   -v "$INPUT:/workspace/input" -v "$OUTPUT:/workspace/output/vathography" \
+  -v "$FAVORITES:/workspace/favorites" \
   -e COMFYUI_AUTH=off -e PUID="$(id -u)" -e PGID="$(id -g)" \
   -p "127.0.0.1:$COMFY_PORT:8188" -p "127.0.0.1:$GUI_PORT:8770" \
   "$IMAGE" >/dev/null
@@ -100,3 +103,4 @@ echo "ComfyUI:     http://127.0.0.1:$COMFY_PORT"
 echo "vathopy GUI: http://127.0.0.1:$GUI_PORT"
 echo "Photos in:   $INPUT"
 echo "Depth out:   $OUTPUT"
+echo "GUI saves:   $FAVORITES"

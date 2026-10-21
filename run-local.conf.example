@@ -4,6 +4,7 @@
 
 #INPUT=~/Pictures/vathography/input
 #OUTPUT=~/Pictures/vathography/depth
+#FAVORITES=~/Pictures/vathography/favorites
 #MODELS=/path/to/runpod-vathography/models
 #STATE=~/.local/share/vathography-local
 #COMFY_PORT=8188

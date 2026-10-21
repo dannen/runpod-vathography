@@ -141,9 +141,9 @@ The image also runs the `vathopy` web GUI (palettes including your own, cycles, 
 ./run-local.sh stop
 ```
 
-- **Folders:** `~/Pictures/vathography/input` (uploaded photos), `~/Pictures/vathography/depth` (ComfyUI writes its EXRs straight there, so no `pull.sh` step), and the models in this repo's `models/`; missing ones are downloaded on first start. Override with `INPUT`, `OUTPUT`, `MODELS` and `STATE`.
+- **Folders:** `~/Pictures/vathography/input` (uploaded photos), `~/Pictures/vathography/depth` (ComfyUI writes its EXRs straight there, so no `pull.sh` step), `~/Pictures/vathography/favorites` (the GUI's saves, the same folder `pull.sh` fills from a pod), and the models in this repo's `models/`; missing ones are downloaded on first start. Override with `INPUT`, `OUTPUT`, `FAVORITES`, `MODELS` and `STATE`.
 - **Ownership:** ComfyUI runs as root in the container, so `start.sh` hands everything written under `/workspace` to `PUID:PGID` (set to your IDs by the script) every few seconds. Without this, the files in your folders would be owned by root.
-- **Config file:** `--config FILE`, or `~/.config/vathography/run-local.conf` when it exists: `KEY=value` lines for `INPUT`, `OUTPUT`, `MODELS`, `STATE`, `COMFY_PORT`, `GUI_PORT`, `IMAGE` and `NAME` (see `run-local.conf.example`). The command line beats the environment, which beats the file.
+- **Config file:** `--config FILE`, or `~/.config/vathography/run-local.conf` when it exists: `KEY=value` lines for `INPUT`, `OUTPUT`, `FAVORITES`, `MODELS`, `STATE`, `COMFY_PORT`, `GUI_PORT`, `IMAGE` and `NAME` (see `run-local.conf.example`). The command line beats the environment, which beats the file.
 - **No password:** both ports listen on 127.0.0.1 only.
 - `batch.sh <folder> --url http://127.0.0.1:8188 --no-pull` runs a folder through it.
 
