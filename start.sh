@@ -18,7 +18,8 @@
 #    volume's S3 gateway instead, falling back to Hugging Face if it fails.
 #    entirely (e.g. while populate-volume.sh --s3 is still uploading).
 # 5. Seed the bundled workflows into the Workflows sidebar.
-# 6. Start the vathopy GUI (port 8770) in the background.
+# 6. Start the vathopy GUI (port 8770) in the background. With PUID set
+#    (local runs with host folders mounted), hand new files to that user.
 # 7. exec ComfyUI as PID 1 so RunPod's stop/restart signals land correctly,
 #    behind nginx's password (the vathopy GUI's) when one is set.
 set -euo pipefail
@@ -103,6 +104,20 @@ mkdir -p "$VOLUME_ROOT/user/default/workflows"
 rsync -a --ignore-existing /opt/vathography-workflows/ "$VOLUME_ROOT/user/default/workflows/"
 
 flock -u 9
+
+# Running locally with host folders mounted into /workspace (README "Local GPU"): ComfyUI and
+# the GUI run as root, so hand what they write to the host user, PUID[:PGID], every few seconds.
+# Unset on pods.
+if [[ -n "${PUID:-}" ]]; then
+  owner="${PUID}:${PGID:-$PUID}"
+  echo "[boot] new files under $VOLUME_ROOT go to uid:gid $owner"
+  (
+    while true; do
+      find "$VOLUME_ROOT" -uid 0 -print0 2>/dev/null | xargs -0 -r chown -h "$owner"
+      sleep 5
+    done
+  ) &
+fi
 
 # vathopy GUI on 8770 (VATHOPY_GUI=off to skip): depth maps from ComfyUI's
 # output/vathography/, saves to favorites/, your palettes from palettes/ on the volume. Set VATHOPY_GUI_AUTH

@@ -23,6 +23,7 @@ Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-o
 | `build.md` | Local build and push checklist |
 | `sync-vathopy.sh` | Copies [`vathopy`](https://github.com/dannen/vathopy) from a checkout next to this one (`../vathopy`) into `vathopy-src/` (gitignored) for the image's GUI layer; run before every build |
 | `batch.py` / `batch.sh` | Runs a folder of photos through the pod at the recommended size, waits, then runs `pull.sh`. Needs Pillow |
+| `run-local.sh` | Runs the image on this machine's NVIDIA GPU, with your photo and depth folders mounted (see [Running locally](#running-locally-on-your-own-gpu)) |
 | `pull.py` / `pull.sh` | Downloads finished results from the pod's job history into `~/Pictures/vathography/depth`, plus crops saved in the pod's GUI (`<map>-cropped.exr`). Finds the running pod itself (cached 30 min) |
 | `bench.py` | Phase 1 benchmark: runs depth/normals/albedo on the pod at given sizes, records time and peak VRAM, saves the EXRs |
 | `podauth.py` | The pod's password (ComfyUI and the GUI share it) for `batch.py`, `pull.py` and `bench.py`: sent to the pod's proxy URLs only |
@@ -128,6 +129,21 @@ The image also runs the `vathopy` web GUI (palettes including your own, cycles, 
 - **The tools log in too:** `batch.sh`, `pull.sh` and `bench.py` send the password on requests to the pod's proxy URLs (only there, never to RunPod's API), from `VATHOPY_GUI_AUTH` or the file `~/.api/runpod/vathopy-gui.auth` (another file: `VATHOPY_GUI_AUTH_FILE`); see `podauth.py`. Without it they stop with a message saying where to put it.
 - **Logs and control:** on the pod, `/tmp/vathopy-gui.log`. It's restarted if it exits. Set `VATHOPY_GUI=off` to not start it.
 - **Building:** it has its own venv (`/opt/vathopy`), so its numpy/OpenCV/OpenEXR can't affect ComfyUI's. Run `./sync-vathopy.sh` before `docker build` (see `build.md`). The image records the source commit in `/opt/vathopy/VATHOPY_COMMIT`.
+
+## Running locally on your own GPU
+
+`run-local.sh` runs the same image on this machine, using its NVIDIA GPU. It needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and the cu128 image (`build.md`). 16GB of VRAM is enough: ComfyUI keeps part of the 20GB backbone in system RAM. On an RTX 4060 Ti 16GB, a 2496 px photo takes about 24 s.
+
+```bash
+./run-local.sh                              # ComfyUI on 127.0.0.1:8188, the vathopy GUI on 127.0.0.1:8771
+./run-local.sh --port 9188 --gui-port 9771  # other ports (or COMFY_PORT / GUI_PORT)
+./run-local.sh stop
+```
+
+- **Folders:** `~/Pictures/vathography/input` (uploaded photos), `~/Pictures/vathography/depth` (ComfyUI writes its EXRs straight there, so no `pull.sh` step), and the models in this repo's `models/`; missing ones are downloaded on first start. Override with `INPUT`, `OUTPUT`, `MODELS` and `STATE`.
+- **Ownership:** ComfyUI runs as root in the container, so `start.sh` hands everything written under `/workspace` to `PUID:PGID` (set to your IDs by the script) every few seconds. Without this, the files in your folders would be owned by root.
+- **No password:** both ports listen on 127.0.0.1 only.
+- `batch.sh <folder> --url http://127.0.0.1:8188 --no-pull` runs a folder through it.
 
 ## Seeding from another volume
 
