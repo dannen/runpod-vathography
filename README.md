@@ -2,15 +2,16 @@
 
 ComfyUI running [Marigold V2](https://github.com/huawei-bayerlab/marigold-v2) monocular depth, normals and albedo estimation on a long-running RunPod **Pod**, used through ComfyUI's web UI via RunPod's HTTP proxy. This is **Phase 1** (pod exploration) of the RunPod plan in the `vathography.md` research notes (§14; not public). Its job is to measure VRAM, time and quality at each resolution, and settle which resolution, checkpoint and GPU tier a later serverless endpoint should use.
 
-It uses a small image, with all models on a dedicated network volume mounted at `/workspace`. ComfyUI has supported Marigold V2 natively since **v0.36.0** (Comfy-Org/ComfyUI#16232), and all three official templates use core nodes only, so there are **no custom nodes**.
+It uses a small image, with all models on a dedicated network volume mounted at `/workspace` (or the pod's own volume). ComfyUI has supported Marigold V2 natively since **v0.36.0** (Comfy-Org/ComfyUI#16232), and all three official templates use core nodes only. The only custom node is our own small **Vathography Output Name** (`custom_nodes/vathography`), which names each result after its photo; no third-party nodes.
 
-Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-on) stays on the local workstation.
+Depth estimation runs here, and so does the `vathopy` web GUI (port 8770), for trying looks on the results straight away. The Blender add-on stays on the workstation. The same image also runs on a local NVIDIA GPU (see [Running locally](#running-locally-on-your-own-gpu)).
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | CUDA 13.0 runtime, Python 3.12 venv, ComfyUI v0.41.3, torch 2.11.0+cu130 (cu130 is required for the int8 kernels) |
+| `Dockerfile` | CUDA 13.0 runtime, Python 3.12 venv, ComfyUI v0.41.3, torch 2.11.0+cu130 (cu130 is required for the int8 CUDA kernels). `BASE_IMAGE`/`CUDA_TAG` build arguments make the cu128 variant for older drivers (see `build.md`) |
+| `custom_nodes/vathography/` | Our one node, **Vathography Output Name**: names results `<photo>_<prediction>_00001.exr` |
 | `start.sh` | Entrypoint: wait for the volume, symlink dirs onto it, download missing models, seed workflows, run ComfyUI |
 | `models.txt` | Model manifest (subdir + URL). **The only list of models.** `start.sh` and `populate-volume.sh` both read it |
 | `populate-volume.sh` | Seeds the volume from this machine through RunPod's S3 gateway. `--dry-run` shows the plan |
@@ -21,13 +22,15 @@ Only depth estimation runs here. All artistic work (`vathopy`, the Blender add-o
 | `create-pod.py` / `.sh` | Create the volume; create / `--update` / `--recreate` the pod |
 | `check-gpu-availability.py` / `check-gpus.sh` | Live GPU stock and pricing |
 | `build.md` | Local build and push checklist |
-| `sync-vathopy.sh` | Copies [`vathopy`](https://github.com/dannen/vathopy) from a checkout next to this one (`../vathopy`) into `vathopy-src/` (gitignored) for the image's GUI layer; run before every build |
+| `sync-vathopy.sh` | Copies [`vathopy`](https://github.com/dannen/vathopy) from a checkout (default `../../vathopy` from this folder, or pass its path) into `vathopy-src/` (gitignored) for the image's GUI layer; run before every build |
 | `batch.py` / `batch.sh` | Runs a folder of photos through the pod at the recommended size, waits, then runs `pull.sh`. Needs Pillow |
-| `run-local.sh` | Runs the image on this machine's NVIDIA GPU, with your photo and depth folders mounted (see [Running locally](#running-locally-on-your-own-gpu)) |
-| `pull.py` / `pull.sh` | Downloads finished results from the pod's job history into `~/Pictures/vathography/depth`, plus crops saved in the pod's GUI (`<map>-cropped.exr`). Finds the running pod itself (cached 30 min) |
+| `run-local.sh` | Runs the image on this machine's NVIDIA GPU, with your photo, depth and favorites folders mounted (see [Running locally](#running-locally-on-your-own-gpu)) |
+| `run-local.conf.example` | Settings file for `run-local.sh` (folders, ports, image, container name) |
+| `pull.py` / `pull.sh` | Downloads finished results from the pod's job history into `~/Pictures/vathography/depth`, plus crops saved in the pod's GUI (`<map>-cropped.exr`) and its saves (`favorites/`). Finds the running pod itself (cached 30 min) |
 | `bench.py` | Phase 1 benchmark: runs depth/normals/albedo on the pod at given sizes, records time and peak VRAM, saves the EXRs |
 | `podauth.py` | The pod's password (ComfyUI and the GUI share it) for `batch.py`, `pull.py` and `bench.py`: sent to the pod's proxy URLs only |
 | `AGENTS.md` | Decisions, current state and open items, for an agent picking this up |
+| `plan.md` | What's next: a serverless depth endpoint, R2 as a model source in `start.sh` (local depth on 16GB is done) |
 
 ## Models (~26.4GB, see `models.txt`)
 
@@ -48,9 +51,9 @@ Only `depth/Log-stage2` is packaged for ComfyUI. The other checkpoints (Uniform-
 
 | File | Output |
 |---|---|
-| `vathography_depth.json` | `output/vathography/depth_*.exr`: near = bright, scaled 0–1, 32-bit float, values written unchanged |
-| `vathography_normals.json` | `output/vathography/normals_*.exr`: unit normals mapped to 0–1, 32-bit float |
-| `vathography_albedo.json` | `output/vathography/albedo_*.exr`: scene-linear albedo, 32-bit float |
+| `vathography_depth.json` | `output/vathography/<photo>_depth_00001.exr`: near = bright, scaled 0–1, 32-bit float, values written unchanged |
+| `vathography_normals.json` | `output/vathography/<photo>_normals_00001.exr`: unit normals mapped to 0–1, 32-bit float |
+| `vathography_albedo.json` | `output/vathography/<photo>_albedo_00001.exr`: scene-linear albedo, 32-bit float |
 
 Compared with the official templates, each one:
 
@@ -97,6 +100,8 @@ All nodes on the main canvas are pinned so they can't be dragged by accident (ri
    ```
    The script only accepts hosts with CUDA 13.0 drivers (`--allowed-cuda-versions`, default `13.0`). If it can't find stock, check that filter first. Add `--env SKIP_MODEL_DOWNLOAD=true` if step 3 is still uploading.
 
+   **CUDA 13 hosts are scarce.** The `-cu128` image (`build.md`) runs on CUDA 12.8+ hosts, and `create-pod.py` accepts 12.8–13.0 for it by default. Cheap GPUs often list no CUDA version that passes the filter at all, yet the cu128 image runs on them (CUDA's minor-version compatibility): pass `--allowed-cuda-versions ""` to accept any host. That's how the last pod ran (an A40 48GB, $0.59/hr). In a datacenter without a network volume, `--pod-volume-gb 50` gives the pod its own volume; the models then download from Hugging Face on first boot (about 3 minutes there) and are lost with the pod, so pull results first.
+
    **With volumes in several datacenters,** give lists and leave out `--network-volume-id`. Each datacenter is tried in order with each GPU type in order, until one has stock:
    ```bash
    ./create-pod.sh --image YOUR_DOCKERHUB_USER/vathography-comfyui:<git-sha> \
@@ -111,7 +116,7 @@ Pods are billed while running. Stop the pod when you're done, and the volume kee
 
 ## vathopy GUI on the pod
 
-The image also runs the `vathopy` web GUI (palettes including your own, cycles, contour lines, creative focus with highlights, looks and 16-bit PNG downloads; see [`vathopy`'s README](https://github.com/dannen/vathopy)) on **port 8770**, next to ComfyUI:
+The image also runs the `vathopy` web GUI on **port 8770**, next to ComfyUI: 65 palettes plus your own, cycles and contour lines, creative focus as planes or 3D shapes, the deletion slab, crop, orientation, a magnifier, looks, 16-bit PNG downloads that carry their settings, and STL downloads for 3D printing (see [`vathopy`'s README](https://github.com/dannen/vathopy)). Downloads (PNG, cropped EXR, STL) go straight to your browser, so they work through the proxy:
 
 - **URL:** `https://<pod-id>-8770.proxy.runpod.net`, with a password: RunPod's proxy URLs are public.
 - **Input:** the depth maps in ComfyUI's output folder, `/workspace/output/vathography/`, so anything the workflows or `batch.sh` produce shows up in its list (depth EXRs only).
@@ -143,7 +148,16 @@ The image also runs the `vathopy` web GUI (palettes including your own, cycles, 
 
 - **Folders:** `~/Pictures/vathography/input` (uploaded photos), `~/Pictures/vathography/depth` (ComfyUI writes its EXRs straight there, so no `pull.sh` step), `~/Pictures/vathography/favorites` (the GUI's saves, the same folder `pull.sh` fills from a pod), and the models in this repo's `models/`; missing ones are downloaded on first start. Override with `INPUT`, `OUTPUT`, `FAVORITES`, `MODELS` and `STATE`.
 - **Ownership:** ComfyUI runs as root in the container, so `start.sh` hands everything written under `/workspace` to `PUID:PGID` (set to your IDs by the script) every few seconds. Without this, the files in your folders would be owned by root.
-- **Config file:** `--config FILE`, or `~/.config/vathography/run-local.conf` when it exists: `KEY=value` lines for `INPUT`, `OUTPUT`, `FAVORITES`, `MODELS`, `STATE`, `COMFY_PORT`, `GUI_PORT`, `IMAGE` and `NAME` (see `run-local.conf.example`). The command line beats the environment, which beats the file.
+- **Config file:** `--config FILE`, or `~/.config/vathography/run-local.conf` when it exists: `KEY=value` lines for `INPUT`, `OUTPUT`, `FAVORITES`, `MODELS`, `STATE`, `COMFY_PORT`, `GUI_PORT`, `IMAGE` and `NAME` (see `run-local.conf.example`). The command line beats the environment, which beats the file. `--config` replaces the default file rather than adding to it.
+- **One config per project:** relative paths in a config file are relative to the file, so a project folder can carry its own:
+  ```bash
+  # ~/Pictures/project/run-local.conf, beside input/, exr/ and favorites/
+  INPUT=input
+  OUTPUT=exr
+  FAVORITES=favorites
+  ```
+  `./run-local.sh --config ~/Pictures/project/run-local.conf` (and the same for `stop`).
+- **A newer GUI:** the container runs the vathopy in its image. After vathopy changes, `./sync-vathopy.sh`, rebuild the cu128 image (`build.md`; cached layers make it a minute or less) and start again.
 - **No password:** both ports listen on 127.0.0.1 only.
 - `batch.sh <folder> --url http://127.0.0.1:8188 --no-pull` runs a folder through it.
 
@@ -258,6 +272,8 @@ Options, from `./check-gpus.sh` on 2026-10-18 (stock changes hourly):
 | RTX 4090 | 24GB | 0.89 | US-CA-2, US-IL-1 | Faster (Ada), but more than 3× the price |
 | A40 | 48GB | 0.59 | US-MO-1 | No stock with CUDA 13 hosts when tried |
 | L40S | 48GB | 1.09 | US-MO-1, US-IL-1 | ~5 s at 2500 px. What Phase 1 ran on |
+
+Later (2026-10-20): an **A40 48GB** in CA-MTL-1 (no S3 gateway, so a pod volume) ran the **cu128** image, $0.59/hr: a 2496 px depth job took ~13 s including the upload, and its maps were within ~0.5–0.9% of a local run's.
 
 **Prefer US-CA-2.** It has A5000 and 4090 cards, plus 48–96GB fallbacks (RTX 6000 Ada, A100, RTX PRO 6000), and an S3 gateway. US-IL-1's S3 gateway had an outage on 2026-10-01.
 

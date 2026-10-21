@@ -5,7 +5,10 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 ## Decisions
 
 - **Persistent Pod, not serverless.** Phase 1 (pod exploration, `vathography.md` §14.4) comes before Phase 2 (serverless), and work has stayed on the pod since. Don't add serverless tooling unless asked.
-- **ComfyUI v0.41.3 + torch 2.11.0+cu130.** Marigold V2 is native from v0.36.0 (Comfy-Org/ComfyUI#16232). cu130 is required for comfy-kitchen's CUDA backend, which runs the int8_convrot backbone (`comfy/quant_ops.py` disables it below CUDA 13). Pods are restricted to CUDA 13.0 hosts via `allowedCudaVersions`. comfy-kitchen's kernels need compute capability ≥ 8.0 (Ampere or newer).
+- **ComfyUI v0.41.3 + torch 2.11.0+cu130.** Marigold V2 is native from v0.36.0 (Comfy-Org/ComfyUI#16232). cu130 is required for comfy-kitchen's CUDA backend, which runs the int8_convrot backbone (`comfy/quant_ops.py` disables it below CUDA 13). Pods on this (cu130) image are restricted to CUDA 13.0 hosts via `allowedCudaVersions`. comfy-kitchen's kernels need compute capability ≥ 8.0 (Ampere or newer).
+- **cu128 variant (2026-10-20):** CUDA 13 hosts are scarce, so the image also builds against CUDA 12.8 (`BASE_IMAGE`/`CUDA_TAG`, tag suffix `-cu128`). The int8 backbone then runs on comfy-kitchen's eager (plain PyTorch) backend; depth maps match the cu130 build's within ~1%. `create-pod.py` accepts 12.8–13.0 hosts for `*-cu128` tags; cheap GPUs often pass no CUDA filter at all yet run it fine, so the last pod used `--allowed-cuda-versions ""`.
+- **Local runs (2026-10-20):** the cu128 image runs on a 16GB card (`run-local.sh`): ComfyUI's dynamic VRAM loading holds part of the 20GB backbone in system RAM. ~24 s at 2496 px on an RTX 4060 Ti. No GGUF needed (`plan.md` Phase 2).
+- **R2 as a model source (2026-10-20):** RunPod's S3 gateway can't put the 20.5GB backbone on a 30GB volume (`QuotaExceeded` counts parts plus the object), and `MODELS_S3` puts an all-volumes key on a pod. A private Cloudflare R2 bucket with a read-only token avoids both; tooling outside this repo fills volumes from it (README "Workaround"). Booting a pod straight from R2 is `plan.md` Phase 3, not built.
 - **One custom node, ours:** `custom_nodes/vathography` (Vathography Output Name) names outputs after the photo. No third-party nodes (`vathography.md` §7 warns against community Marigold nodes).
 - **Volume contents: depth, normals and albedo** (all three Marigold V2 predictions), about 26.4GB. Only depth/Log-stage2 is packaged for ComfyUI.
 - **`vathography_*.json` is generated, never hand-edited.** `make_workflows.py` builds them from the untouched official templates:
@@ -17,30 +20,32 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 - **No raw `.npy`.** The output is the post-processed map: per-image min/max normalized, near = bright, after the VAE decode clamped it to 0–1. `vathopy prep` needs `--kind near-bright` for these files.
 - **Seeding:** from this machine (`populate-volume.sh`, conservative S3 multipart settings), or volume to volume (`copy-volume.py`, 2026-10-19). `copy-volume.py` runs a throwaway CPU pod on the target volume that pulls from the source volume's S3 gateway with `get-object`, checks each file against Hugging Face's SHA-256 and logs to `/workspace/seed.log`; the script deletes the pod when done (it holds the S3 key). It avoids the S3 gateway's upload problems below, since nothing is uploaded. CPU pods go through GraphQL `deployCpuPod`: REST `/v1/pods` rejects US-NE-1. Within one datacenter it needs no pod: S3 `copy-object` between the two volumes works server-side (~110 MB/s); a 20GB copy gets Cloudflare's 524 after ~2 min but lands anyway (~3 min), so the script polls for full size, then verifies (local copy's MD5/SHA-256, else download + SHA-256). `--push` runs the pod in the source datacenter and uploads (target with no pod supply): 8MB multipart (Cloudflare 413s anything over 100MB), verified by recomputing the multipart ETag from the source copy (the gateway ignores `x-amz-checksum-sha256`); files over `--max-size` (5GB, i.e. the backbone) are skipped for `populate-volume.sh`.
 - **GPU: 48GB is plenty; 24GB would do** (measured: ~20 GiB of weights plus ≤1.8 GiB per job up to ~3500 px). Prefer cheaper, slower cards: depth jobs take seconds while the pod stays up for minutes.
-- **The vathopy GUI runs on the pod** (port 8770), in its own venv so its numpy/OpenCV/OpenEXR can't affect ComfyUI. `sync-vathopy.sh` copies `vathopy` (https://github.com/dannen/vathopy, checked out next to this repo as `../vathopy`) into the gitignored `vathopy-src/` before each build and records the commit in `VATHOPY_COMMIT`.
+- **The vathopy GUI runs on the pod** (port 8770), in its own venv so its numpy/OpenCV/OpenEXR can't affect ComfyUI. `sync-vathopy.sh` copies `vathopy` (https://github.com/dannen/vathopy; default checkout `../../vathopy` from this folder, or pass its path) into the gitignored `vathopy-src/` before each build and records the commit in `VATHOPY_COMMIT`. Image tags are `<this repo's sha>-<vathopy sha>[-cu128]`; `latest` / `latest-cu128` follow the newest. Pods are rolled out by the sha tag, never `latest`.
 - **Your palettes on the pod:** `start.sh` creates `/workspace/palettes/` on the volume and starts the GUI with `vathopy --palettes /workspace/palettes gui …`. Upload palette files there through the S3 gateway (`put-object`, key `palettes/<file>`) after `vathopy check-palettes` passes locally; the GUI re-reads the folder on each page load and skips (and logs) anything that fails vathopy's checks. Looks saved with a user palette refer to it by name.
-- **Untrusted files:** vathopy reads palettes and depth maps as data only and checks them before decoding (header-first size caps, regular files only, no pickles). That matters here because ComfyUI on the pod has no password and its proxy URL is public: anyone with the URL could write files into the output folder the GUI reads.
+- **Untrusted files:** vathopy reads palettes and depth maps as data only and checks them before decoding (header-first size caps, regular files only, no pickles). That matters here because whatever reaches ComfyUI (uploads, any workflow's saves) lands in the folder the GUI reads, and ComfyUI's proxy URL is public; it's password-protected since 2026-10-18 (below), but the checks don't rely on that.
 - **ComfyUI is behind the same password** (2026-10-18): it has no login of its own, so `start.sh` runs nginx on 8188 (basic auth from `COMFYUI_AUTH`, default `VATHOPY_GUI_AUTH`; websockets passed through) in front of ComfyUI on `127.0.0.1:8189`. No password: open with a warning; nginx failing: ComfyUI stays local-only (fail closed). `batch.py`/`pull.py`/`bench.py` send it via `podauth.py` (env or `~/.api/runpod/vathopy-gui.auth`), to `*.proxy.runpod.net` only.
 - **Password on the GUI:** RunPod's proxy URLs are public. `VATHOPY_GUI_AUTH` (user:password) comes from the pod env; keep the credentials in a local file outside the repo (mode 600; `build.md` uses `~/.api/runpod/vathopy-gui.auth`). `create-pod.sh --update` replaces the whole env, so **always pass `--env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"`** (see `build.md`).
 - `models.txt` is the only list of models (`start.sh` and `populate-volume.sh` both read it).
 
-## Current state (2026-10-19)
+## Current state (2026-10-21)
 
-- **Pod** `vathography-comfyui`, **L40S 48GB** ($1.09/hr) in US-MO-1. The A40 ($0.59) was the first choice but had no CUDA 13 hosts.
-  - Image `YOUR_DOCKERHUB_USER/vathography-comfyui:621c97b` (vathopy `1898257`: adds the five-row map list with arrow keys, ◀ ▶ step buttons on every slider, **Save local**, the map name above the picture, new GUI starting values), ports 8188/http, 8770/http, 22/tcp, env `VATHOPY_GUI_AUTH`. Built, pushed and set on the pod with `--update` on 2026-10-19 while the pod was **stopped**, so it hasn't run yet: check it (password 401/200 on both ports, the GUI's new buttons) on the next start.
-  - **Pod deleted** (2026-10-19) after RunPod reported a critical error on its host; recreating it failed for lack of L40S stock in US-MO-1. Newest image `2363fa3` (vathopy `e14103f`, adds the Cycles fine slider), built and pushed, never run. Starting a stopped pod can fail if its host has no free GPU; then `--recreate` (see `build.md`).
-  - ComfyUI: `https://<pod-id>-8188.proxy.runpod.net` (password, via nginx). `pull.sh` finds the pod ID. Verified: ComfyUI 0.41.3, torch cu130, `comfy_kitchen backend cuda: available: True`.
-  - vathopy GUI: `https://<pod-id>-8770.proxy.runpod.net` (password). Reads `/workspace/output/vathography/`, saves to `/workspace/favorites/`, your palettes from `/workspace/palettes/`. Verified through the proxy: 401 without the password, list, full render (213 ms), save and download.
-  - Earlier images: `061a155` (vathopy `8d67604`; verified 2026-10-18: ComfyUI and the GUI 401 without the password and 200 with it, the 2496 workflows, palettes from `palettes/`, `podauth` in the tools), `1752c0b`, `47d9975`, `d8333d8`, `gui-2026-10-18`, `c1eb935`, `ed23784` (`502c471` was built but never rolled).
-- **Volumes** (2026-10-19), 30GB each, the new default (`--volume-size`; models 26.38GB):
-  - US-MO-1: seeded, by server-side `copy-object` from the original 50GB volume, which was then deleted along with its old outputs and favorites.
+- **No pod.**
+  - **Last pod:** an A40 48GB in CA-MTL-1 ($0.59/hr) on the cu128 image `be6dda3-d52f5b4-cu128`, with a 50GB pod volume (no network volume in that datacenter), created with `--allowed-cuda-versions ""`. Verified: 401/200 on 8188 and 8770; 2496 px depth jobs ~13 s including upload; maps within ~0.5–0.9% of local runs. Deleted 2026-10-20; its pod volume went with it.
+  - **Before that:** the L40S pod in US-MO-1 was deleted on 2026-10-19 after RunPod reported a critical error on its host, and no L40S was free to recreate it.
+- **Images** (Docker Hub, `YOUR_DOCKERHUB_USER/vathography-comfyui`):
+  - Newest: `661c279-23f3c65` (cu130, = `latest`) and `661c279-23f3c65-cu128` (= `latest-cu128`), with vathopy `23f3c65`: shape focuses, the deletion slab, STL export, orientation, magnifier, settings in saved PNGs, 65 palettes. Built and pushed 2026-10-21. The cu128 one runs locally; **neither has run on a pod yet**: check 401/200 on both ports and the GUI's new sections on the next pod.
+  - Verified earlier: `be6dda3-d52f5b4-cu128` (above); `061a155` (cu130, 2026-10-18). Never run: `621c97b`, `2363fa3`.
+- **Volumes**, 30GB each (`--volume-size`; models 26.38GB), named `vathography-storage-<dc suffix>`:
+  - US-MO-1: seeded, by server-side `copy-object` from the original 50GB volume (since deleted with its old outputs and favorites).
   - US-NE-1: seeded by `copy-volume.py` (CPU pod). Has RTX PRO 6000 MIG 24/48GB, not yet seen with CUDA 13.
-  - US-IL-1: empty (no CPU or A5000 supply to seed it from on 2026-10-19).
-  - `create-pod.sh` takes comma lists for `--datacenter` and `--gpu-type-id` and tries them in order, finding each datacenter's volume by `--volume-name` prefix (GraphQL fallback where REST rejects the datacenter). Volumes named `vathography-storage-<dc suffix>`.
+  - US-IL-1: seeded from R2 on 2026-10-20 (a GPU pod, 112 s, every file = Hugging Face's SHA-256). Two earlier US-IL-1 volumes, which `copy-volume.py --push` couldn't fill, were deleted.
+  - `create-pod.sh` takes comma lists for `--datacenter` and `--gpu-type-id` and tries them in order, finding each datacenter's volume by `--volume-name` prefix (GraphQL fallback where REST rejects the datacenter).
+- **Region:** North America only for now (owner's choice, 2026-10-19).
 - **Local tools:**
   - `batch.sh DIR`: resizes locally (`--resize 2496|4200`, default 2496, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
-  - `pull.sh`: finds the running pod (cached 30 min) and downloads results to `~/Pictures/vathography/depth/`, plus the GUI's `favorites/` saves to `~/Pictures/vathography/favorites/`. Verified against the volume's S3 checksums (MD5, SHA-256), falls back to S3 if the pod can't deliver, never overwrites (`-001`), keeps MD5-aware records (ComfyUI reuses names after deletions). Also `--from-volume`, `--match`, `--verify-existing`, `--clear-volume`, `--clear-inputs`.
+  - `pull.sh`: finds the running pod (cached 30 min) and downloads results to `~/Pictures/vathography/depth/`, plus the GUI's `favorites/` saves to `~/Pictures/vathography/favorites/` and its crops. Verified against the volume's S3 checksums (MD5, SHA-256), falls back to S3 if the pod can't deliver, never overwrites (`-001`), keeps MD5-aware records (ComfyUI reuses names after deletions). Also `--from-volume`, `--match`, `--verify-existing`, `--clear-volume`, `--clear-inputs`.
   - `bench.py`: time and peak VRAM per size.
+  - `run-local.sh`: the image on this machine's GPU, folders and ports from `--config` (relative paths relative to the file, so a project folder can carry its own config) or `~/.config/vathography/run-local.conf`.
 - **The US-CA-2 24GB test was cancelled** (2026-10-18) and its volume deleted. A5000, RTX 6000 Ada and 4090 had no CUDA 13 hosts there for an hour of retries.
 - **Seeding gotcha (US-MO-1 S3 gateway):**
   - `CompleteMultipartUpload` failed on large files with `InvalidPart`/`NoSuchUpload` or a read timeout; in one case the object had been written in full anyway.
@@ -50,10 +55,14 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 
 ## Open items
 
-1. Optional: move to a 24GB card (A5000 in US-CA-2) if CUDA 13 hosts appear; README "GPU and VRAM" has the order (prove the host, seed, bench, then delete the old pod and volume). The first attempt was cancelled.
-2. Optional: `--cache-lru` in `start.sh`, so running another workflow doesn't drop the 20GB model (~2 min reload).
-3. The 1280/2500/3750 comparison on a sharp, full-size digital original (only a film scan and reduced copies so far).
-4. Whether to add the reference pipeline (Uniform-base, Disparity-base, INT8 vs 4-bit), per `vathography.md` §14.4.
+1. Run the newest image on a pod and check it (password 401/200 on 8188 and 8770; the GUI's Cut, 3D print and shape controls; an STL download through the proxy).
+2. Consider making `--allowed-cuda-versions ""` the default for `*-cu128` tags (every cheap GPU failed the 12.8+ filter but ran the image).
+3. R2 in `start.sh` (`MODELS_SOURCE=r2`), `plan.md` Phase 3, so a pod in any datacenter boots from the bucket.
+4. Serverless depth endpoint, `plan.md` Phase 1 (not started; the owner: later).
+5. Optional: `--cache-lru` in `start.sh`, so running another workflow doesn't drop the 20GB model (~2 min reload).
+6. Optional: a 24GB card (A5000) for pods; README "GPU and VRAM" has the order. With the cu128 image the CUDA 13 constraint that blocked it is gone.
+7. The 1280/2500/3750 comparison on a sharp, full-size digital original (only a film scan and reduced copies so far).
+8. Whether to add the reference pipeline (Uniform-base, Disparity-base, INT8 vs 4-bit), per `vathography.md` §14.4.
 
 ## Phase 1 findings (2026-10-18, L40S 48GB in US-MO-1, `bench.py`)
 
