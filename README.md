@@ -137,11 +137,13 @@ The image also runs the `vathopy` web GUI (palettes including your own, cycles, 
 ```bash
 ./run-local.sh                              # ComfyUI on 127.0.0.1:8188, the vathopy GUI on 127.0.0.1:8771
 ./run-local.sh --port 9188 --gui-port 9771  # other ports (or COMFY_PORT / GUI_PORT)
+./run-local.sh --config my.conf             # settings from a file
 ./run-local.sh stop
 ```
 
 - **Folders:** `~/Pictures/vathography/input` (uploaded photos), `~/Pictures/vathography/depth` (ComfyUI writes its EXRs straight there, so no `pull.sh` step), and the models in this repo's `models/`; missing ones are downloaded on first start. Override with `INPUT`, `OUTPUT`, `MODELS` and `STATE`.
 - **Ownership:** ComfyUI runs as root in the container, so `start.sh` hands everything written under `/workspace` to `PUID:PGID` (set to your IDs by the script) every few seconds. Without this, the files in your folders would be owned by root.
+- **Config file:** `--config FILE`, or `~/.config/vathography/run-local.conf` when it exists: `KEY=value` lines for `INPUT`, `OUTPUT`, `MODELS`, `STATE`, `COMFY_PORT`, `GUI_PORT`, `IMAGE` and `NAME` (see `run-local.conf.example`). The command line beats the environment, which beats the file.
 - **No password:** both ports listen on 127.0.0.1 only.
 - `batch.sh <folder> --url http://127.0.0.1:8188 --no-pull` runs a folder through it.
 
@@ -170,6 +172,7 @@ A file that fails is deleted from the target, so rerunning copies it again. `--p
 - The gateway ignores upload checksums (it accepted a deliberately wrong `x-amz-checksum-sha256`), so each file is checked by its ETag instead. The pod checks its own copy against Hugging Face's SHA-256 and computes the multipart ETag from it (the MD5 of the parts' MD5s). That must match the ETag the target lists, which also catches a `CompleteMultipartUpload` that reports failure after the object landed.
 - Files over `--max-size` (default 5GB, which leaves out the 20.5GB backbone) are skipped. Upload those from a machine that has them: `MANIFEST=<file listing just them> ./populate-volume.sh <DC> <volume-id> --keep-local`.
 - The job logs to `push.log` on the source volume.
+- **It can't deliver the 20.5GB backbone to a 30GB volume.** The gateway counts the uploaded parts and the finished object against the quota at the same time (~47GB), so `CompleteMultipartUpload` fails with `QuotaExceeded`, even on an empty volume. Use [R2](#workaround-keep-the-models-in-cloudflare-r2) or a pod in the target datacenter instead.
 
 **Across datacenters:**
 
@@ -181,6 +184,55 @@ A file that fails is deleted from the target, so rerunning copies it again. `--p
 Both datacenters need RunPod's S3 API. The source is read over it, and the target's is used to follow the log. CPU pods are created through the GraphQL API (`deployCpuPod`), because the REST `/v1/pods` endpoint rejects some datacenters (US-NE-1 in October 2026).
 
 Measured US-MO-1 → US-NE-1 (2026-10-19): 42–50 MB/s on most files. The source gateway dipped to 3 MB/s for a while, and one attempt at the 20.5GB backbone failed (the retry ran at 30 MB/s). It took ~24 minutes and cost ~$0.03. A partly downloaded file doesn't show up in S3 listings, so the log is quiet while the backbone copies.
+
+## Workaround: keep the models in Cloudflare R2
+
+RunPod's storage has gaps that keep a pod from getting its models:
+- Not every datacenter offers network volumes, so a pod there starts with an empty disk.
+- The S3 gateway can't fill a 30GB volume with the 20.5GB backbone (see `--push` above).
+- `MODELS_S3` and `copy-volume.py` put your RunPod S3 key on a pod, and that key reads and writes **every** volume.
+- Hugging Face's download speed varies by datacenter.
+
+A copy of the models in your own [Cloudflare R2](https://developers.cloudflare.com/r2/) bucket avoids all of them. R2 charges nothing for downloads, and the 26.4GB costs about $0.40/month to store. A pod in any datacenter copies the files straight onto its disk or its network volume, so the S3 gateway is never involved. The token it uses can be read-only and limited to one bucket.
+
+Not built into the image yet: `start.sh` support (`MODELS_SOURCE=r2`) is Phase 3 of `plan.md`. Until then, the steps below are manual.
+
+**1. Make a bucket and two tokens** in the Cloudflare dashboard: R2 → Create bucket, then R2 → **Manage API tokens** (not the account's API tokens page) → one token with Object Read & Write for your machine and one with Object Read only for pods, both scoped to that bucket. Each gives an Access Key ID and a Secret Access Key. Your account ID is on the R2 overview page. Keep them in a file outside the repo, mode 600:
+```bash
+# e.g. ~/.api/cloudflare/r2-ro.env (and r2.env for the read-write token)
+R2_ACCOUNT_ID=<account id>
+R2_ACCESS_KEY_ID=<access key id>
+R2_SECRET_ACCESS_KEY=<secret access key>
+R2_BUCKET=<bucket name>
+```
+
+**2. Configure rclone from the environment,** so no secret is written to disk. Use a recent rclone (v1.71 or later; some pod images carry one too old to know the Cloudflare provider):
+```bash
+set -a; . ~/.api/cloudflare/r2.env; set +a
+export RCLONE_CONFIG= \
+  RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare RCLONE_CONFIG_R2_REGION=auto \
+  RCLONE_CONFIG_R2_ENDPOINT="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+  RCLONE_CONFIG_R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+  RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true      # a bucket-scoped token can't list buckets
+```
+
+**3. Upload the models once,** from a machine that has them (`populate-volume.sh --keep-local` leaves them in `./models/`), with the read-write token:
+```bash
+rclone copy ./models "r2:$R2_BUCKET/models" --include "*.safetensors" --transfers 4 --s3-chunk-size 64M --progress
+```
+
+**4. On the pod, copy them onto the disk,** with the read-only token passed in the pod's env (`--env` on `create-pod.sh`):
+```bash
+rclone copy "r2:$R2_BUCKET/models" /workspace/models --exclude "*.partial" \
+  --transfers 4 --multi-thread-streams 16 --multi-thread-cutoff 256M --modify-window 1s
+```
+- `--modify-window 1s`: network volumes keep whole-second file dates. Without it, a rerun on a full volume hashes every file again (6 minutes instead of 1 second).
+- Check the result against Hugging Face's SHA-256 (the `X-Linked-Etag` header of each file's URL), as `copy-volume.py` does.
+- To fill a network volume for later pods, do the same on a throwaway pod with the volume attached, then delete the pod. A CPU pod is enough where there's CPU supply.
+
+**Measured (2026-10-20):** a US-IL-1 GPU pod filled an empty 30GB volume with all 10 files in **112 s**; CPU pods in US-NE-1 and EU-RO-1 took 5 to 8 minutes. A few of rclone's 16 parallel connections often run 2 to 4 times slower than the rest, so a big file can wait on its last part.
+
+**Keep the read-only token on pods only.** Anyone who can read the pod's env can read the bucket: fine for public model weights, not for private data. Delete throwaway pods as soon as they finish.
 
 ## GPU and VRAM
 

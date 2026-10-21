@@ -5,38 +5,67 @@
 #
 #   ./run-local.sh                          # start (or restart) the container
 #   ./run-local.sh --port 9188 --gui-port 9771   # on other local ports
+#   ./run-local.sh --config my.conf         # settings from a file (see below)
 #   ./run-local.sh stop                     # stop and remove it
 #   ./run-local.sh logs                     # follow its log
 #
-# Folders (override with env vars):
-#   MODELS  ./models (this repo; models.txt files missing there are downloaded on first start)
-#   INPUT   ~/Pictures/vathography/input   photos uploaded to ComfyUI land here
-#   OUTPUT  ~/Pictures/vathography/depth   ComfyUI writes its EXRs here; the GUI reads them
-#   STATE   ~/.local/share/vathography-local   ComfyUI's user settings, the GUI's favorites/palettes
+# Settings, each from (highest first) the command line, the environment, the config file,
+# or the default:
+#   MODELS      ./models (this repo; models.txt files missing there are downloaded on first start)
+#   INPUT       ~/Pictures/vathography/input   photos uploaded to ComfyUI land here
+#   OUTPUT      ~/Pictures/vathography/depth   ComfyUI writes its EXRs here; the GUI reads them
+#   STATE       ~/.local/share/vathography-local   ComfyUI's user settings, the GUI's favorites/palettes
+#   COMFY_PORT  8188 (--port)       GUI_PORT  8771 (--gui-port)
+#   IMAGE       dannen/vathography-comfyui:latest-cu128       NAME  vathography-local
 # Files the container writes there are handed to you (PUID/PGID), not left owned by root.
+#
+# Config file: --config FILE, else ~/.config/vathography/run-local.conf if it exists. KEY=value
+# lines with the keys above; # comments; ~ and $HOME are expanded, and relative paths are
+# relative to the file. It's read, not run. Example: run-local.conf.example.
 set -euo pipefail
-cd "$(dirname "$0")"
 
+KEYS="NAME IMAGE MODELS INPUT OUTPUT STATE COMFY_PORT GUI_PORT"
+usage() { echo "usage: $0 [start] [--config FILE] [--port N] [--gui-port N] | stop [--config FILE] | logs" >&2; exit 2; }
+cmd=start config="" cli_comfy="" cli_gui=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    start|stop|logs) cmd=$1 ;;
+    --config) config=$(realpath "${2:?--config needs a file}"); shift ;;
+    --port) cli_comfy=${2:?--port needs a number}; shift ;;
+    --gui-port) cli_gui=${2:?--gui-port needs a number}; shift ;;
+    *) usage ;;
+  esac
+  shift
+done
+[[ -n "$config" || ! -f "$HOME/.config/vathography/run-local.conf" ]] || config="$HOME/.config/vathography/run-local.conf"
+[[ -z "$config" || -f "$config" ]] || { echo "ERROR: no config file $config" >&2; exit 1; }
+
+# The config file fills in what the environment didn't set.
+if [[ -n "$config" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == *=* ]] || { echo "ERROR: $config: not KEY=value: $line" >&2; exit 1; }
+    key="${line%%=*}" val="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"; val="${val#"${val%%[![:space:]]*}"}"
+    [[ " $KEYS " == *" $key "* ]] || { echo "ERROR: $config: unknown key $key (known: $KEYS)" >&2; exit 1; }
+    val="${val#[\"\']}"; val="${val%[\"\']}"                         # optional quotes
+    val="${val/#\~/$HOME}"; val="${val//\$HOME/$HOME}"; val="${val//\$\{HOME\}/$HOME}"
+    if [[ "$key" =~ ^(MODELS|INPUT|OUTPUT|STATE)$ && "$val" != /* ]]; then val="$(dirname "$config")/$val"; fi
+    [[ -n "${!key:-}" ]] || printf -v "$key" '%s' "$val"
+  done < "$config"
+fi
+
+cd "$(dirname "$0")"
 NAME=${NAME:-vathography-local}
 IMAGE=${IMAGE:-dannen/vathography-comfyui:latest-cu128}
 MODELS=${MODELS:-$PWD/models}
 INPUT=${INPUT:-$HOME/Pictures/vathography/input}
 OUTPUT=${OUTPUT:-$HOME/Pictures/vathography/depth}
 STATE=${STATE:-$HOME/.local/share/vathography-local}
-COMFY_PORT=${COMFY_PORT:-8188}
-GUI_PORT=${GUI_PORT:-8771}      # 8770 is left for a vathopy GUI run outside the container
+COMFY_PORT=${cli_comfy:-${COMFY_PORT:-8188}}
+GUI_PORT=${cli_gui:-${GUI_PORT:-8771}}      # 8770 is left for a vathopy GUI run outside the container
 
-usage() { echo "usage: $0 [start] [--port N] [--gui-port N] | stop | logs" >&2; exit 2; }
-cmd=start
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    start|stop|logs) cmd=$1 ;;
-    --port) COMFY_PORT=${2:?--port needs a number}; shift ;;
-    --gui-port) GUI_PORT=${2:?--gui-port needs a number}; shift ;;
-    *) usage ;;
-  esac
-  shift
-done
 case "$cmd" in
   stop) docker rm -f "$NAME" >/dev/null && echo "stopped $NAME"; exit ;;
   logs) exec docker logs -f "$NAME" ;;

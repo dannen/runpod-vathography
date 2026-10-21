@@ -1,0 +1,12 @@
+# Settings for run-local.sh: copy to ~/.config/vathography/run-local.conf (read automatically)
+# or pass with --config FILE. KEY=value lines; ~ and $HOME are expanded; relative paths are
+# relative to this file. Leave a line out (or commented) to keep the default.
+
+#INPUT=~/Pictures/vathography/input
+#OUTPUT=~/Pictures/vathography/depth
+#MODELS=/path/to/runpod-vathography/models
+#STATE=~/.local/share/vathography-local
+#COMFY_PORT=8188
+#GUI_PORT=8771
+#IMAGE=dannen/vathography-comfyui:latest-cu128
+#NAME=vathography-local
