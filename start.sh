@@ -129,7 +129,7 @@ if [[ "${VATHOPY_GUI:-on}" != "off" && -x /opt/vathopy/bin/vathopy ]]; then
   (
     while true; do
       /opt/vathopy/bin/vathopy --palettes "$VOLUME_ROOT/palettes" gui --host 0.0.0.0 --port 8770 \
-        --depth-dir "$VOLUME_ROOT/output/vathography" --favourites "$VOLUME_ROOT/favorites" \
+        --depth-dir "$VOLUME_ROOT/output/vathography" --favourites "$VOLUME_ROOT/favorites" --photos "$VOLUME_ROOT/input" \
         >> /tmp/vathopy-gui.log 2>&1
       echo "[vathopy] gui exited ($?), restarting in 5s" >> /tmp/vathopy-gui.log
       sleep 5
