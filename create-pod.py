@@ -215,7 +215,7 @@ def main():
     )
     parser.add_argument("--name", default="vathography-comfyui", help="Pod name (default: vathography-comfyui)")
     parser.add_argument("--image", help="Docker image reference (e.g. user/vathography-comfyui:latest)")
-    parser.add_argument("--gpu-type-id", help='GPU type, e.g. "NVIDIA RTX PRO 6000 Blackwell Server Edition" (see check-gpu-availability.py); '
+    parser.add_argument("--gpu-type-id", help='GPU type, e.g. "NVIDIA RTX PRO 6000 Blackwell Server Edition" (see check-gpus.sh); '
                                               'a comma-separated list is tried in order')
     parser.add_argument("--datacenter", help="Datacenter ID, e.g. US-IL-1 — must match the network volume's datacenter; a comma-separated "
                                              "list is tried in order, each with its own volume (found by --volume-name)")

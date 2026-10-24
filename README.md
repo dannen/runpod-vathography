@@ -20,7 +20,7 @@ Depth estimation runs here, and so does the `vathopy` web GUI (port 8770), for t
 | `workflows/vathography_*.json` | Generated from those by `make_workflows.py`: input resize plus 32-bit float EXR output. Use these |
 | `make_workflows.py` | Regenerates `vathography_*.json`. Every edit is asserted, so a changed upstream template fails loudly |
 | `create-pod.py` / `.sh` | Create the volume; create / `--update` / `--recreate` the pod |
-| `check-gpu-availability.py` / `check-gpus.sh` | Live GPU stock and pricing |
+| `check-gpus.sh` | Live GPU stock and pricing: runs `tools/gpus.py` from a [comfyui-runpod](https://github.com/dannen/comfyui-runpod) checkout next to this repo (or `COMFYUI_RUNPOD=`); `--cheapest` for the cheapest anywhere |
 | `build.md` | Local build and push checklist |
 | `sync-vathopy.sh` | Copies [`vathopy`](https://github.com/dannen/vathopy) from a checkout (default `../../vathopy` from this folder, or pass its path) into `vathopy-src/` (gitignored) for the image's GUI layer; run before every build |
 | `batch.py` / `batch.sh` | Runs a folder of photos through the pod at the recommended size, waits, then runs `pull.sh`. Needs Pillow |
