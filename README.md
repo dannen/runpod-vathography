@@ -289,7 +289,7 @@ Later (2026-10-20): an **A40 48GB** in CA-MTL-1 (no S3 gateway, so a pod volume)
 
 1. **A global pass** sees the whole photo at up to 2496 px long edge (the best whole-photo size in Phase 1), never enlarged. It fixes the overall shape.
 2. **Tiles** of 2048 px are cut from the photo at full resolution, overlapping by at least 512 px. A side shorter than 2048 px gets tiles of its own length, so a panorama strip gets wide, short tiles: nothing is padded, and there's no empty canvas for the model to read depth into. Every model input is a multiple of 16 px.
-3. **Merge:** each tile's prediction is matched to the global one by a robust scale-and-offset fit (Huber), so a tile that disagrees with the whole photo falls back to the global map there. The tiles are blended with raised-cosine weights across their overlaps. The result keeps the global map's shape at large scale (above about 64 global-pass pixels), with the tiles' detail on top; a smaller split (4) left rings round fish that a tile placed at another depth than the global pass, in a dark, noisy aquarium photo. Output: near = bright, 0–1 (min–max, like `MarigoldV2PostProcess`).
+3. **Merge:** each tile's prediction is matched to the global one by a robust scale-and-offset fit (Huber), so a tile that disagrees with the whole photo falls back to the global map there. The tiles are blended with raised-cosine weights across their overlaps. The result keeps the global map's shape at large scale (above about 64 global-pass pixels), with the tiles' detail on top; a smaller split (4) left rings round fish that a tile placed at another depth than the global pass, in a dark, noisy aquarium photo ([Lu Zhao, Pexels](https://www.pexels.com/photo/silhouette-of-a-man-standing-in-front-of-a-huge-tank-in-an-aquarium-10431750/)). Output: near = bright, 0–1 (min–max, like `MarigoldV2PostProcess`).
 
 `mode` **full** runs all of that; **draft** runs the global pass alone (~20 s), as a quick look. Tile size, overlap, global size and the detail split are advanced inputs on the node. `VATHOGRAPHY_TILED_DUMP=<folder>` in the environment saves each job's raw predictions, so a merge can be retried without the GPU.
 
@@ -309,6 +309,10 @@ Both are built from scratch by `make_workflows.py`.
   - Edges and fine structures come out much crisper than the plain 2496 px map, and flat areas stay smooth.
   - No seams show at the tile edges, even at 6 fringe cycles.
   - 2496 px tiles gave nearly the same map (r = 0.999) in 4 min 24 s.
+- **See-through results:**
+  - **Glass office building** ([Wellington Silva, Pexels](https://www.pexels.com/photo/modern-buildings-in-the-city-14589851/)), 2783 × 3478, 4 tiles: the base model makes the curtain wall a solid block. See-through puts the window grid in front, with the lit floors and their furniture set back behind it. No seams.
+  - **Aquarium** ([Lu Zhao, Pexels](https://www.pexels.com/photo/silhouette-of-a-man-standing-in-front-of-a-huge-tank-in-an-aquarium-10431750/)), 6048 × 4024, 12 tiles in 4 min 36 s: the base model makes the tank a flat glass wall. See-through puts the fish, rocks, shark and ray at their own depths in the water.
+  - On a dark, noisy shot like the aquarium, the draft (whole-photo pass, 24 s) is nearly as good, since each tile sees mostly water and noise. Tiling pays off most on sharp, well-lit photos.
 
 ## Batch processing
 
