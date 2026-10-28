@@ -17,6 +17,7 @@
 #    a RunPod S3 key) copies each missing file from that seeded network
 #    volume's S3 gateway instead, falling back to Hugging Face if it fails.
 #    entirely (e.g. while populate-volume.sh --s3 is still uploading).
+#    MODEL_SETS=see-through (comma-separated) also checks models-<set>.txt.
 # 5. Seed the bundled workflows into the Workflows sidebar.
 # 6. Start the vathopy GUI (port 8770) in the background. With PUID set
 #    (local runs with host folders mounted), hand new files to that user.
@@ -80,6 +81,17 @@ else
     /opt/awscli/bin/aws --endpoint-url "https://s3api-$dc.runpod.io" --region "$dc" --cli-read-timeout 600 \
       s3api get-object --bucket "$vol" --key "$1" "$2" > /dev/null
   }
+  manifests=("$COMFY_ROOT/models.txt")
+  IFS=',' read -r -a sets <<< "${MODEL_SETS:-}"
+  for set in "${sets[@]}"; do
+    [[ -z "$set" ]] && continue
+    if [[ -f "$COMFY_ROOT/models-$set.txt" ]]; then
+      manifests+=("$COMFY_ROOT/models-$set.txt")
+    else
+      echo "[boot] WARNING: MODEL_SETS names '$set', but there's no models-$set.txt - ignored"
+    fi
+  done
+  echo "[boot] model lists: ${manifests[*]##*/}"
   while read -r -u 3 subdir url; do
     [[ -z "$subdir" || "$subdir" == \#* ]] && continue
     target="$VOLUME_ROOT/models/$subdir/$(basename "$url")"
@@ -96,7 +108,7 @@ else
       curl -L --fail --progress-bar --show-error -o "${target}.partial" "$url"
     fi
     mv "${target}.partial" "$target"
-  done 3< "$COMFY_ROOT/models.txt"
+  done 3< <(cat "${manifests[@]}")
 fi
 
 echo "[boot] seeding bundled workflows"

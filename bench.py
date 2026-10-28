@@ -49,6 +49,14 @@ PREDICTIONS = {
                "marigold_v2_albedo_conditioning.safetensors", "sRGB"),
 }
 
+# Our Vathography Tiled Depth node (custom_nodes/vathography/tiled.py): the photo at
+# its own size, a global pass plus full-resolution tiles. depth-see-through loads the
+# see-through model (depth behind glass, nf4 backbone) with our see_through.py loader;
+# both use the depth conditioning.
+TILED = ("depth-tiled", "depth-see-through")
+SEE_THROUGH = ("marigold_v2_see_through_qwen_image_edit_2509_nf4.safetensors",
+               "marigold_v2_depth_see_through.safetensors", "marigold_v2_depth_see_through_vae.safetensors")
+
 
 # a = width, b = height, c = long edge (same expression as make_workflows.py).
 SIDE_EXPR = "max(16, round({side} * min(c, max(a, b)) / max(a, b) / 16) * 16)"
@@ -83,7 +91,36 @@ def upload_image(base, path: Path) -> str:
     return out["name"]
 
 
-def build_prompt(image_name, long_edge, prediction, prefix, run=0):
+def build_tiled_prompt(image_name, prediction, prefix, mode="full"):
+    """Load Image -> Vathography Tiled Depth (mode full or draft) -> EXR, as an API prompt."""
+    if prediction == "depth-see-through":
+        backbone, lora, vae = SEE_THROUGH
+        model = {"10": {"class_type": "VathographySeeThroughModel", "inputs": {"backbone": backbone, "lora": lora}}}
+        model_out = ["10", 0]
+    else:
+        lora, vae, _, _ = PREDICTIONS["depth"]
+        model = {"10": {"class_type": "UNETLoader",
+                        "inputs": {"unet_name": "qwen_image_edit_2509_int8_convrot.safetensors", "weight_dtype": "default"}},
+                 "11": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["10", 0], "lora_name": lora, "strength_model": 1}}}
+        model_out = ["11", 0]
+    return {
+        "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+        **model,
+        "12": {"class_type": "ModelSamplingAuraFlow",
+               "inputs": {"model": model_out, "shift": 1.73, "sampling": "img_to_img_velocity"}},
+        "13": {"class_type": "ConditioningLoader", "inputs": {"conditioning_name": "marigold_v2_depth_conditioning.safetensors"}},
+        "14": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
+        "30": {"class_type": "VathographyTiledDepth",
+               "inputs": {"image": ["1", 0], "model": ["12", 0], "vae": ["14", 0], "conditioning": ["13", 0], "mode": mode}},
+        "23": {"class_type": "SaveImageAdvanced",
+               "inputs": {"images": ["30", 0], "filename_prefix": prefix, "format": "exr",
+                          "format.bit_depth": "32-bit float", "format.input_color_space": "linear"}},
+    }
+
+
+def build_prompt(image_name, long_edge, prediction, prefix, run=0, mode="full"):
+    if prediction in TILED:
+        return build_tiled_prompt(image_name, prediction, prefix, mode)
     lora, vae, cond, color_space = PREDICTIONS[prediction]
     return {
         "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
@@ -181,7 +218,7 @@ def main():
     p.add_argument("--url", required=True, help="Pod proxy URL, e.g. https://<pod-id>-8188.proxy.runpod.net")
     p.add_argument("--image", required=True, type=Path, help="Input photo")
     p.add_argument("--long-edge", type=int, nargs="+", default=[1280], help="Inference sizes: long edge in pixels (default 1280)")
-    p.add_argument("--prediction", choices=list(PREDICTIONS), default="depth")
+    p.add_argument("--prediction", choices=list(PREDICTIONS) + list(TILED), default="depth")
     p.add_argument("--repeat", type=int, default=1, help="Runs per size (2 gives a warm number)")
     p.add_argument("--poll", type=float, default=0.2, help="VRAM sampling interval in seconds (default 0.2)")
     p.add_argument("--out", type=Path, default=Path("bench-out"), help="Where to save the EXRs")

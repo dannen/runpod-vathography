@@ -1,0 +1,469 @@
+{
+  "id": "67e99d77-5923-541a-9da1-5d3452212dbd",
+  "revision": 0,
+  "last_node_id": 10,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            2,
+            6
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "example.png",
+        "image"
+      ],
+      "title": "Photo (its own size)"
+    },
+    {
+      "id": 2,
+      "type": "VathographySeeThroughModel",
+      "pos": [
+        0,
+        420
+      ],
+      "size": [
+        320,
+        110
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VathographySeeThroughModel"
+      },
+      "widgets_values": [
+        "marigold_v2_see_through_qwen_image_edit_2509_nf4.safetensors",
+        "marigold_v2_depth_see_through.safetensors"
+      ],
+      "title": "See-through model (nf4 + LoRA)"
+    },
+    {
+      "id": 4,
+      "type": "ModelSamplingAuraFlow",
+      "pos": [
+        0,
+        660
+      ],
+      "size": [
+        320,
+        90
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ModelSamplingAuraFlow"
+      },
+      "widgets_values": [
+        1.73,
+        "img_to_img_velocity"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "VAELoader",
+      "pos": [
+        0,
+        780
+      ],
+      "size": [
+        320,
+        60
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "marigold_v2_depth_see_through_vae.safetensors"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "ConditioningLoader",
+      "pos": [
+        0,
+        870
+      ],
+      "size": [
+        320,
+        60
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ConditioningLoader"
+      },
+      "widgets_values": [
+        "marigold_v2_depth_conditioning.safetensors"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "VathographyTiledDepth",
+      "pos": [
+        380,
+        0
+      ],
+      "size": [
+        360,
+        260
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 3
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 4
+        },
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "depth",
+          "type": "IMAGE",
+          "links": [
+            7,
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VathographyTiledDepth"
+      },
+      "widgets_values": [
+        "full",
+        2048,
+        512,
+        2496,
+        4.0
+      ],
+      "title": "Tiled depth (full = global + tiles, draft = global only)"
+    },
+    {
+      "id": 8,
+      "type": "VathographyOutputName",
+      "pos": [
+        800,
+        0
+      ],
+      "size": [
+        440,
+        130
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 6
+        },
+        {
+          "name": "suffix",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "suffix"
+          }
+        },
+        {
+          "name": "folder",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "folder"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VathographyOutputName"
+      },
+      "widgets_values": [
+        "depth-see-through",
+        "vathography"
+      ],
+      "title": "Output name (from the photo)"
+    },
+    {
+      "id": 9,
+      "type": "SaveImageAdvanced",
+      "pos": [
+        800,
+        170
+      ],
+      "size": [
+        440,
+        354
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 7
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "link": 8,
+          "widget": {
+            "name": "filename_prefix"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveImageAdvanced"
+      },
+      "widgets_values": [
+        "vathography/depth-see-through",
+        "exr",
+        "32-bit float",
+        "linear"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "vathography/depth-see-through",
+        "format": "exr",
+        "format.bit_depth": "32-bit float",
+        "format.input_color_space": "linear"
+      }
+    },
+    {
+      "id": 10,
+      "type": "PreviewImage",
+      "pos": [
+        800,
+        570
+      ],
+      "size": [
+        440,
+        360
+      ],
+      "flags": {
+        "pinned": true
+      },
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": [],
+      "title": "Result preview"
+    }
+  ],
+  "links": [
+    [
+      1,
+      2,
+      0,
+      4,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      1,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ],
+    [
+      3,
+      4,
+      0,
+      7,
+      1,
+      "MODEL"
+    ],
+    [
+      4,
+      5,
+      0,
+      7,
+      2,
+      "VAE"
+    ],
+    [
+      5,
+      6,
+      0,
+      7,
+      3,
+      "CONDITIONING"
+    ],
+    [
+      6,
+      1,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      7,
+      0,
+      9,
+      0,
+      "IMAGE"
+    ],
+    [
+      8,
+      8,
+      0,
+      9,
+      1,
+      "STRING"
+    ],
+    [
+      9,
+      7,
+      0,
+      10,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

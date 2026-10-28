@@ -4,8 +4,9 @@
 # every model on the mounted network volume (see start.sh / models.txt).
 # Marigold V2 is native in ComfyUI core since Comfy-Org/ComfyUI #16232
 # (2026-09-12, first released in v0.36.0: MarigoldV2PostProcess), and the
-# three official templates in workflows/ use core nodes only. The one custom
-# node is ours (custom_nodes/vathography, ~60 lines).
+# three official templates in workflows/ use core nodes only. The custom
+# nodes are ours (custom_nodes/vathography): output names, tiled depth and the
+# see-through model loader. No third-party custom nodes.
 #
 # Two builds (see build.md): the default cu130, and cu128 for hosts with older
 # drivers (CUDA 12.8+):
@@ -80,9 +81,13 @@ RUN python3 -m venv /opt/vathopy \
     && cp /opt/vathopy-src/VATHOPY_COMMIT /opt/vathopy/ \
     && /opt/vathopy/bin/vathopy --version
 
-# ───────────────────── Our custom node ─────────────────────
-# custom_nodes/vathography names output files after the photo
-# (<photo>_depth_00001.exr). No third-party custom nodes.
+# ───────────────────── Our custom nodes ─────────────────────
+# custom_nodes/vathography: output files named after the photo
+# (<photo>_depth_00001.exr), Vathography Tiled Depth (tiled.py) and the
+# Vathography See-through Model loader (see_through.py), which needs
+# bitsandbytes to dequantise its nf4 backbone (0.48.2 wrote the file).
+RUN ./venv/bin/pip install --no-input "bitsandbytes==0.48.2" \
+    && ./venv/bin/python -c "import bitsandbytes.functional"
 COPY custom_nodes/vathography/ /opt/ComfyUI/custom_nodes/vathography/
 
 # ───────────────────── Workflows + entrypoint ─────────────────────
@@ -90,7 +95,7 @@ COPY custom_nodes/vathography/ /opt/ComfyUI/custom_nodes/vathography/
 # (without overwriting edited copies), so they show up in the Workflows
 # sidebar.
 COPY workflows/ /opt/vathography-workflows/
-COPY start.sh models.txt ./
+COPY start.sh models.txt models-*.txt ./
 RUN chmod +x start.sh
 
 EXPOSE 8188 8770

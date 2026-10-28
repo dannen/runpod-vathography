@@ -1,0 +1,18 @@
+# Optional model set "see-through": start.sh downloads it only with MODEL_SETS=see-through
+# (comma-separated sets) in the pod env. Same format as models.txt. 13.5GB, so a 30GB
+# volume holding models.txt (26.4GB) is too small: use a 45GB volume.
+#
+# The Marigold V2 see-through model (depth behind glass), converted for ComfyUI by
+# Vathography from Marigold V2 (huawei-bayerlab) and Qwen-Image-Edit-2509, Apache-2.0:
+# https://huggingface.co/Vathography/marigold-v2-see-through-comfyui (pinned to a commit).
+# Loaded by the tiled depth pack's See-through Loader (nf4 backbone + LoRA); uses
+# models.txt's depth conditioning.
+#
+# SHA-256 (as Hugging Face lists them):
+#   3489128612be229f59f94240d22a2a316bb7997b1d4265de5531476d0670491f  diffusion_models/marigold_v2_see_through_qwen_image_edit_2509_nf4.safetensors (11.6GB)
+#   8f89a956b027126f801e9811bdfacce7ae2d434914177b1a4e62dca95bd8e227  loras/marigold_v2_depth_see_through.safetensors (1.7GB)
+#   3dd6f7c282b4d8857c105e209ca860787f46dccbf8d864453d592a7d73f4c9f8  vae/marigold_v2_depth_see_through_vae.safetensors (0.25GB)
+
+diffusion_models https://huggingface.co/Vathography/marigold-v2-see-through-comfyui/resolve/ef7d12b25ef183cd810d36928e2ab0725ae031d2/diffusion_models/marigold_v2_see_through_qwen_image_edit_2509_nf4.safetensors
+loras            https://huggingface.co/Vathography/marigold-v2-see-through-comfyui/resolve/ef7d12b25ef183cd810d36928e2ab0725ae031d2/loras/marigold_v2_depth_see_through.safetensors
+vae              https://huggingface.co/Vathography/marigold-v2-see-through-comfyui/resolve/ef7d12b25ef183cd810d36928e2ab0725ae031d2/vae/marigold_v2_depth_see_through_vae.safetensors

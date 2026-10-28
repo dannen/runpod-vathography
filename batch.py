@@ -6,6 +6,9 @@ results with pull.py (checksum-verified).
     ./batch.sh ~/Pictures/some-folder                  # depth for every photo, 2496 px long edge
     ./batch.sh DIR --resize 4200                       # 4200 px long edge (panoramas)
     ./batch.sh DIR --predictions depth normals albedo  # all three
+    ./batch.sh DIR --predictions depth-tiled           # full-resolution tiled depth
+    ./batch.sh DIR --predictions depth-see-through     # tiled, depth behind glass
+    ./batch.sh DIR --predictions depth-tiled --draft   # quick look: the global pass alone
     ./batch.sh DIR --via-s3                            # upload through the volume's S3 gateway
     ./batch.sh DIR --dry-run                           # show sizes, upload nothing
 
@@ -29,6 +32,13 @@ Settings (from the Phase 1 tests in AGENTS.md):
     through RunPod's S3 gateway instead, and checks the MD5 the gateway
     reports against the local file. That avoids the proxy and its limit,
     and needs the aws CLI and ~/.api/runpod/s3-credentials, like pull.py.
+  - depth-tiled and depth-see-through use our Vathography Tiled Depth node:
+    the photo goes up at its own size (upright, JPEG quality 95), and the
+    node runs a global pass (up to 2496 px, never enlarged) plus
+    full-resolution tiles, so --resize doesn't apply. --draft runs the
+    global pass alone (about 20 s a photo) and names the maps
+    <photo>_<prediction>-draft_NNNNN.exr. depth-see-through needs the
+    see-through model files on the volume (models-see-through.txt).
   - Jobs are queued grouped by prediction (all depth, then normals, then
     albedo), so the model switch (30-45 s per LoRA) happens once each.
   - Output EXRs are saved on the volume as vathography/<photo>_<prediction>_NNNNN.exr
@@ -67,7 +77,8 @@ except ImportError:
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp"}
 RESIZE_CHOICES = (2496, 4200)
 WIDE = 2.0  # aspect ratio from which --resize 2496 gets a panorama warning
-PREDICTION_ORDER = ["depth", "normals", "albedo"]
+PREDICTION_ORDER = ["depth", "normals", "albedo", "depth-tiled", "depth-see-through"]
+FULL_SIZE = ("depth-tiled", "depth-see-through")  # the tiled node takes the photo at its own size
 
 
 def plan_size(w, h, long_edge):
@@ -137,8 +148,10 @@ def safe(stem):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("_") or "image"
 
 
-def queue(url, image_name, long_edge, prediction, stem):
-    graph = bench.build_prompt(image_name, long_edge, prediction, f"vathography/{safe(stem)}_{prediction}")
+def queue(url, image_name, long_edge, prediction, stem, draft=False):
+    tag = f"{prediction}-draft" if draft and prediction in FULL_SIZE else prediction
+    graph = bench.build_prompt(image_name, long_edge, prediction, f"vathography/{safe(stem)}_{tag}",
+                               mode="draft" if draft else "full")
     graph["24"] = {"class_type": "PreviewImage", "inputs": {"images": ["22", 0]}}
     body = json.dumps({"prompt": graph}).encode()
     try:
@@ -184,6 +197,9 @@ def main():
     ap.add_argument("--resize", type=int, choices=RESIZE_CHOICES, default=2496,
                     help="Long edge in px for the uploads: 2496 (default, regular photos; the workflows' default "
                          "too) or 4200 (panoramas)")
+    ap.add_argument("--draft", action="store_true",
+                    help="depth-tiled / depth-see-through: the global pass alone, no tiles (a quick look; "
+                         "saved as <photo>_<prediction>-draft_*.exr)")
     ap.add_argument("--via-s3", action="store_true",
                     help="Upload into the pod's volume through RunPod's S3 gateway instead of the web proxy")
     ap.add_argument("--recursive", action="store_true", help="Include photos in subfolders")
@@ -216,20 +232,22 @@ def main():
             print(f"  skip {f.name}: can't read it ({e})")
             continue
         size = plan_size(w, h, args.resize)
-        todo = [p for p in preds if args.force or not list(out.glob(f"{f.stem}_{p}_*.exr"))]
+        tag = lambda p: f"{p}-draft" if args.draft and p in FULL_SIZE else p
+        todo = [p for p in preds if args.force or not list(out.glob(f"{f.stem}_{tag(p)}_*.exr"))]
         plan.append((f, (w, h), size, todo))
+    # tiled jobs: the photo as it is (the node finds its own sizes)
+    jobs = [(f, (w, h) if p in FULL_SIZE else size, p) for f, (w, h), size, todo in plan for p in todo]
 
     print(f"{len(plan)} photo(s) in {folder}, long edge {args.resize} px:")
     wide = 0
     for f, (w, h), (tw, th), todo in plan:
-        what = ", ".join(todo) if todo else "already done (--force to rerun)"
+        what = ", ".join(f"{p} (full size)" if p in FULL_SIZE else p for p in todo) if todo else "already done (--force to rerun)"
         flag = ""
         if args.resize < max(RESIZE_CHOICES) and max(w, h) / min(w, h) >= WIDE and max(w, h) > args.resize:
             flag, wide = "  (wide: --resize 4200 suits panoramas)", wide + 1
         print(f"  {f.name:50s} {w} x {h}  ->  {tw} x {th}   {what}{flag}")
     if wide:
         print(f"{wide} wide photo(s) would run at only {args.resize} px across; consider --resize 4200 for those.")
-    jobs = [(f, size, p) for f, _, size, todo in plan for p in todo]
     if not jobs:
         print("Nothing to run.")
         return
@@ -253,14 +271,16 @@ def main():
     # Upload each photo once, then queue grouped by prediction.
     uploaded, failed = {}, []
     route = f"volume {vol.label} via S3" if vol else "the pod (web proxy)"
-    print(f"Uploading {len({f for f, _, _ in jobs})} photo(s) to input/{subfolder}/ on {route} ...")
+    print(f"Uploading {len({(f, size) for f, size, _ in jobs})} photo(s) to input/{subfolder}/ on {route} ...")
     for f, size, _ in jobs:
-        if f in uploaded:
+        if (f, size) in uploaded:
             continue
         try:
             data = prepare(f, size)
             name = f"{safe(f.stem)}.jpg"
-            uploaded[f] = upload_s3(vol, data, name, subfolder) if vol else upload(url, data, name, subfolder)
+            if any(g == f for g, _ in uploaded):                 # the same photo at a second size
+                name = f"{safe(f.stem)}_{size[0]}px.jpg"
+            uploaded[(f, size)] = upload_s3(vol, data, name, subfolder) if vol else upload(url, data, name, subfolder)
             print(f"  {f.name}  ({len(data) / 1e6:.1f} MB" + (", MD5 OK" if vol else "") + ")")
         except Exception as e:
             print(f"  FAILED upload {f.name}: {e}")
@@ -268,10 +288,10 @@ def main():
     pending = {}
     for pred in preds:
         for f, size, p in jobs:
-            if p != pred or f not in uploaded:
+            if p != pred or (f, size) not in uploaded:
                 continue
             try:
-                pid = queue(url, uploaded[f], max(size), pred, f.stem)
+                pid = queue(url, uploaded[(f, size)], max(size), pred, f.stem, args.draft)
                 pending[pid] = f"{f.name} {pred} {size[0]} x {size[1]}"
             except Exception as e:
                 print(f"  FAILED to queue {f.name} {pred}: {e}")

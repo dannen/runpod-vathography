@@ -42,6 +42,12 @@ SaveImageAdvanced -> ImageCompare. Changes per template:
 
 Every edit asserts what it expects to find, so a changed upstream template
 fails loudly instead of producing a broken graph.
+
+Two more are built from scratch (no template): vathography_depth_tiled.json
+and vathography_depth_see_through.json, Load Image -> Vathography Tiled Depth
+(custom_nodes/vathography/tiled.py) -> 32-bit float EXR named after the
+photo, with the depth model's loaders (or, for see-through, our Vathography
+See-through Model loader) wired in.
 """
 
 import json
@@ -286,7 +292,82 @@ def adapt(graph: dict, prediction: str, color_space: str, name: str) -> dict:
     return graph
 
 
+# Built from scratch: (output name, suffix after the photo's name, see-through model?)
+TILED = {
+    "vathography_depth_tiled.json": ("depth-tiled", False),
+    "vathography_depth_see_through.json": ("depth-see-through", True),
+}
+TILED_DEFAULTS = ["full", 2048, 512, 2496, 4.0]   # mode, tile, overlap, global_long_edge, detail_sigma (tiled.py)
+
+
+def build_tiled(suffix: str, see_through: bool, name: str) -> dict:
+    """Load Image -> Vathography Tiled Depth -> EXR named after the photo, plus a preview."""
+    nodes_, links = [], []
+
+    def add(nid, kind, pos, size, widgets, inputs=(), outputs=(), title=None):
+        n = {"id": nid, "type": kind, "pos": pos, "size": size, "flags": {"pinned": True}, "order": len(nodes_), "mode": 0,
+             "inputs": [dict(i) for i in inputs], "outputs": [dict(o, links=[]) for o in outputs],
+             "properties": {"Node name for S&R": kind}, "widgets_values": widgets}
+        if title:
+            n["title"] = title
+        nodes_.append(n)
+        return n
+
+    def wire(a, a_slot, b, b_input, kind):
+        lid = len(links) + 1
+        links.append([lid, a["id"], a_slot, b["id"], [i["name"] for i in b["inputs"]].index(b_input), kind])
+        a["outputs"][a_slot]["links"].append(lid)
+        next(i for i in b["inputs"] if i["name"] == b_input)["link"] = lid
+
+    inp = lambda nm, kind, widget=False: {"name": nm, "type": kind, "link": None, **({"widget": {"name": nm}} if widget else {})}
+    out = lambda nm, kind: {"name": nm, "type": kind}
+    load = add(1, "LoadImage", [0, 0], [320, 360], ["example.png", "image"], (), (out("IMAGE", "IMAGE"), out("MASK", "MASK")),
+               "Photo (its own size)")
+    if see_through:
+        model = add(2, "VathographySeeThroughModel", [0, 420], [320, 110],
+                    ["marigold_v2_see_through_qwen_image_edit_2509_nf4.safetensors", "marigold_v2_depth_see_through.safetensors"],
+                    (), (out("MODEL", "MODEL"),), "See-through model (nf4 + LoRA)")
+        vae_name = "marigold_v2_depth_see_through_vae.safetensors"
+    else:
+        unet = add(2, "UNETLoader", [0, 420], [320, 90], ["qwen_image_edit_2509_int8_convrot.safetensors", "default"],
+                   (), (out("MODEL", "MODEL"),))
+        model = add(3, "LoraLoaderModelOnly", [0, 540], [320, 90], ["marigold_v2_depth_log_stage2.safetensors", 1],
+                    (inp("model", "MODEL"),), (out("MODEL", "MODEL"),))
+        wire(unet, 0, model, "model", "MODEL")
+        vae_name = "marigold_v2_depth_log_stage2_vae.safetensors"
+    sampling = add(4, "ModelSamplingAuraFlow", [0, 660], [320, 90], [1.73, "img_to_img_velocity"],
+                   (inp("model", "MODEL"),), (out("MODEL", "MODEL"),))
+    wire(model, 0, sampling, "model", "MODEL")
+    vae = add(5, "VAELoader", [0, 780], [320, 60], [vae_name], (), (out("VAE", "VAE"),))
+    cond = add(6, "ConditioningLoader", [0, 870], [320, 60], ["marigold_v2_depth_conditioning.safetensors"],
+               (), (out("CONDITIONING", "CONDITIONING"),))
+    tiled = add(7, "VathographyTiledDepth", [380, 0], [360, 260], list(TILED_DEFAULTS),
+                (inp("image", "IMAGE"), inp("model", "MODEL"), inp("vae", "VAE"), inp("conditioning", "CONDITIONING")),
+                (out("depth", "IMAGE"),), "Tiled depth (full = global + tiles, draft = global only)")
+    for a, kind, name_ in ((load, "IMAGE", "image"), (sampling, "MODEL", "model"), (vae, "VAE", "vae"),
+                           (cond, "CONDITIONING", "conditioning")):
+        wire(a, 0, tiled, name_, kind)
+    namer = add(8, "VathographyOutputName", [800, 0], [440, 130], [suffix, "vathography"],
+                (inp("image", "IMAGE"), inp("suffix", "STRING", True), inp("folder", "STRING", True)),
+                (out("filename_prefix", "STRING"),), "Output name (from the photo)")
+    wire(load, 0, namer, "image", "IMAGE")
+    save = add(9, "SaveImageAdvanced", [800, 170], [440, 354], [f"vathography/{suffix}", "exr", "32-bit float", "linear"],
+               (inp("images", "IMAGE"), inp("filename_prefix", "STRING", True)), (out("images", "IMAGE"),))
+    save["widgets_values_named"] = {"filename_prefix": f"vathography/{suffix}", "format": "exr",
+                                    "format.bit_depth": "32-bit float", "format.input_color_space": "linear"}
+    wire(tiled, 0, save, "images", "IMAGE")
+    wire(namer, 0, save, "filename_prefix", "STRING")
+    preview = add(10, "PreviewImage", [800, 570], [440, 360], [], (inp("images", "IMAGE"),), (), "Result preview")
+    wire(tiled, 0, preview, "images", "IMAGE")
+    return {"id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"runpod-vathography/{name}")), "revision": 0,
+            "last_node_id": max(n["id"] for n in nodes_), "last_link_id": len(links), "nodes": nodes_, "links": links,
+            "groups": [], "config": {}, "extra": {}, "version": 0.4}
+
+
 def main():
+    for dst, (suffix, see_through) in TILED.items():
+        (WORKFLOWS / dst).write_text(json.dumps(build_tiled(suffix, see_through, dst), indent=2) + "\n")
+        print(f"(built) -> {dst}")
     for src, (dst, prediction, color_space) in TEMPLATES.items():
         graph = json.loads((WORKFLOWS / src).read_text())
         out = adapt(graph, prediction, color_space, dst)

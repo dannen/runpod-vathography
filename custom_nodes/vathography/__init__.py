@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Vathography Output Name: a filename prefix taken from the photo that was
 loaded, so results are saved as <photo>_<suffix>_00001.exr instead of
@@ -9,8 +10,8 @@ an input (so ComfyUI reruns it whenever the photo changes; hidden inputs
 aren't part of the cache key), follows that link back through the job to
 the Load Image node, and uses its file name without folder or extension.
 
-Our own code, baked into the image; the project otherwise uses no custom
-nodes (vathography.md §7).
+Our own code, baked into the image, like Vathography Tiled Depth (tiled.py);
+the project uses no third-party custom nodes (vathography.md §7).
 """
 
 import re
@@ -60,5 +61,9 @@ class VathographyOutputName:
         return ("/".join(parts),)
 
 
-NODE_CLASS_MAPPINGS = {"VathographyOutputName": VathographyOutputName}
-NODE_DISPLAY_NAME_MAPPINGS = {"VathographyOutputName": "Vathography Output Name"}
+from . import see_through, tiled  # noqa: E402
+
+NODE_CLASS_MAPPINGS = {"VathographyOutputName": VathographyOutputName, **tiled.NODE_CLASS_MAPPINGS,
+                       **see_through.NODE_CLASS_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {"VathographyOutputName": "Vathography Output Name", **tiled.NODE_DISPLAY_NAME_MAPPINGS,
+                              **see_through.NODE_DISPLAY_NAME_MAPPINGS}

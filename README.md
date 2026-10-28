@@ -2,7 +2,7 @@
 
 ComfyUI running [Marigold V2](https://github.com/huawei-bayerlab/marigold-v2) monocular depth, normals and albedo estimation on a long-running RunPod **Pod**, used through ComfyUI's web UI via RunPod's HTTP proxy. This is **Phase 1** (pod exploration) of the RunPod plan in the `vathography.md` research notes (§14; not public). Its job is to measure VRAM, time and quality at each resolution, and settle which resolution, checkpoint and GPU tier a later serverless endpoint should use.
 
-It uses a small image, with all models on a dedicated network volume mounted at `/workspace` (or the pod's own volume). ComfyUI has supported Marigold V2 natively since **v0.36.0** (Comfy-Org/ComfyUI#16232), and all three official templates use core nodes only. The only custom node is our own small **Vathography Output Name** (`custom_nodes/vathography`), which names each result after its photo; no third-party nodes.
+It uses a small image, with all models on a dedicated network volume mounted at `/workspace` (or the pod's own volume). ComfyUI has supported Marigold V2 natively since **v0.36.0** (Comfy-Org/ComfyUI#16232), and all three official templates use core nodes only. The custom nodes are our own (`custom_nodes/vathography`): **Vathography Output Name**, which names each result after its photo, **Vathography Tiled Depth** and the **Vathography See-through Model** loader (see [Tiled and see-through depth](#tiled-and-see-through-depth)). No third-party custom nodes.
 
 Depth estimation runs here, and so does the `vathopy` web GUI (port 8770), for trying looks on the results straight away. The Blender add-on stays on the workstation. The same image also runs on a local NVIDIA GPU (see [Running locally](#running-locally-on-your-own-gpu)).
 
@@ -45,7 +45,7 @@ All from [Comfy-Org/marigold-v2-0](https://huggingface.co/Comfy-Org/marigold-v2-
 | `marigold_v2_normals` / `_vae` / `_conditioning` | `loras/`, `vae/`, `embeddings/` | 1.96GB | Normals |
 | `marigold_v2_albedo` / `_vae` / `_conditioning` | `loras/`, `vae/`, `embeddings/` | 1.96GB | Albedo |
 
-Only `depth/Log-stage2` is packaged for ComfyUI. The other checkpoints (Uniform-base, Disparity-base, the layered variants) exist only in the [reference pipeline](https://github.com/huawei-bayerlab/marigold-v2) (`vathography.md` §4, §6).
+Optional: the see-through model (13.5GB, `models-see-through.txt`), see below. Only `depth/Log-stage2` is packaged for ComfyUI by Comfy-Org. The other checkpoints (Uniform-base, Disparity-base, the layered variants) exist only in the [reference pipeline](https://github.com/huawei-bayerlab/marigold-v2) (`vathography.md` §4, §6).
 
 ## Workflows
 
@@ -283,6 +283,33 @@ Later (2026-10-20): an **A40 48GB** in CA-MTL-1 (no S3 gateway, so a pod volume)
 3. Run `bench.py` on the A5000 at 1280, 2500 and 3500 px to confirm VRAM and speed.
 4. Only then delete the L40S pod and the US-MO-1 volume, after pulling anything still on it (`./pull.sh --from-volume`).
 
+## Tiled and see-through depth
+
+**Vathography Tiled Depth** (`custom_nodes/vathography/tiled.py`, our own) makes a depth map at the photo's **own** resolution:
+
+1. **A global pass** sees the whole photo at up to 2496 px long edge (the best whole-photo size in Phase 1), never enlarged. It fixes the overall shape.
+2. **Tiles** of 2048 px are cut from the photo at full resolution, overlapping by at least 512 px. A side shorter than 2048 px gets tiles of its own length, so a panorama strip gets wide, short tiles: nothing is padded, and there's no empty canvas for the model to read depth into. Every model input is a multiple of 16 px.
+3. **Merge:** each tile's prediction is matched to the global one by a robust scale-and-offset fit (Huber), so a tile that disagrees with the whole photo falls back to the global map there. The tiles are blended with raised-cosine weights across their overlaps. The result keeps the global map's large-scale shape, with the tiles' detail on top. Output: near = bright, 0–1 (min–max, like `MarigoldV2PostProcess`).
+
+`mode` **full** runs all of that; **draft** runs the global pass alone (~20 s), as a quick look. Tile size, overlap, global size and the detail split are advanced inputs on the node. `VATHOGRAPHY_TILED_DUMP=<folder>` in the environment saves each job's raw predictions, so a merge can be retried without the GPU.
+
+| File | Output |
+|---|---|
+| `vathography_depth_tiled.json` | `output/vathography/<photo>_depth-tiled_00001.exr`: near = bright, 0–1, 32-bit float |
+| `vathography_depth_see_through.json` | `output/vathography/<photo>_depth-see-through_00001.exr`: the same with the see-through model, which gives the depth **behind** glass (windows, windshields) instead of at the glass |
+
+Both are built from scratch by `make_workflows.py`.
+
+- **See-through model:** the **Vathography See-through Model** loader (`see_through.py`, our own) loads the 4-bit nf4 backbone with bitsandbytes and adds the see-through LoRA unmerged, in place of Load Diffusion Model + LoraLoaderModelOnly. The files (13.5GB, from [Vathography/marigold-v2-see-through-comfyui](https://huggingface.co/Vathography/marigold-v2-see-through-comfyui), Apache-2.0) are an optional set in `models-see-through.txt`. `start.sh` downloads them only when the pod env has `MODEL_SETS=see-through`. With `models.txt` (26.4GB) that needs a **45GB** volume.
+- **Time on a 16GB RTX 4060 Ti:**
+  - A 5616 × 3712 photo: 5 min 18 s (12 tiles), against 26 s for the plain workflow at 2496 px.
+  - A 5616 × 1200 strip: 64 s (4 tiles).
+  - Photos no bigger than 2496 px get the global pass alone, at their own size (~20 s).
+- **Result on a 5616 px film scan:**
+  - Edges and fine structures come out much crisper than the plain 2496 px map, and flat areas stay smooth.
+  - No seams show at the tile edges, even at 6 fringe cycles.
+  - 2496 px tiles gave nearly the same map (r = 0.999) in 4 min 24 s.
+
 ## Batch processing
 
 `./batch.sh <folder>` runs every photo in a folder through the pod and downloads the results:
@@ -291,6 +318,8 @@ Later (2026-10-20): an **A40 48GB** in CA-MTL-1 (no S3 gateway, so a pod volume)
 ./batch.sh ~/Pictures/some-folder                   # depth for every photo, 2496 px long edge
 ./batch.sh DIR --resize 4200                        # 4200 px long edge (panoramas)
 ./batch.sh DIR --predictions depth normals albedo   # all three
+./batch.sh DIR --predictions depth-tiled            # tiled depth at the photo's own size
+./batch.sh DIR --predictions depth-see-through      # tiled, depth behind glass (needs the see-through set)
 ./batch.sh DIR --via-s3                             # upload through the volume's S3 gateway, not the web proxy
 ./batch.sh DIR --dry-run                            # show the planned sizes; upload nothing
 ```
@@ -299,6 +328,7 @@ Later (2026-10-20): an **A40 48GB** in CA-MTL-1 (no S3 gateway, so a pod volume)
    - **2496:** ~2500 gave the best depth on regular photos (depth degraded by 3750); 2496 is the nearest multiple of 16.
    - **4200:** for panoramas, since 2496 leaves too few pixels top to bottom (a 4.3:1 panorama at 2496 is 2496 × 576). With the default, wide photos (2:1 or wider) are flagged in the plan.
    - **Small photos:** a photo smaller than the target is never enlarged.
+   - **Tiled:** `depth-tiled` and `depth-see-through` upload the photo at its own size (upright, JPEG quality 95); `--resize` doesn't apply to them.
 2. **Preparing:** the photo is resized here, before upload (EXIF rotation applied, Lanczos, JPEG quality 95). Uploads are a few MB instead of 10–120 MB.
 3. **Uploading:** by default through ComfyUI's upload, via RunPod's web proxy. `--via-s3` writes each photo straight into the pod's volume (`input/batch-<time>/`) through RunPod's S3 gateway instead, and checks the MD5 the gateway reports against the local file. That avoids the proxy and its 100 MB limit. It needs the `aws` CLI and `~/.api/runpod/s3-credentials`, like `pull.sh`.
 4. **Queueing:** jobs are queued grouped by prediction (all depth, then normals, then albedo), so the model switch (30–45 s) happens once each. Results are saved on the volume as `vathography/<photo>_<prediction>_NNNNN.exr` (e.g. `IMG_0001_depth_00001.exr`), the same as the browser workflows.
@@ -407,4 +437,5 @@ What to measure (`vathography.md` §14.4), with results recorded in `AGENTS.md`:
 - **Scripting the API through the proxy:** Cloudflare rejects Python urllib's default User-Agent (`error code: 1010`). Set a User-Agent header.
 - **Proxy timeout:** RunPod's proxy drops connections after about 100s, which can cut the progress websocket during long runs. The job keeps running on the server, and refreshing the tab reconnects.
 - **Serverless:** not set up. It's Phase 2 (`vathography.md` §14.5), built after Phase 1 fixes the resolution and GPU tier. `runpod/worker-comfyui` 5.11.0 ships ComfyUI 0.34.0, which predates Marigold V2 (v0.36.0), so it needs either a newer ComfyUI or its own handler. The pod tooling's lessons apply: results go to S3 rather than base64, the region is lowercase, downloads use `get-object`, and the template is pinned to a git-sha image tag.
+- **This repo** is GPL-3.0-or-later (`LICENSE`), like ComfyUI, whose modules its custom nodes import, and like vathopy. The depth maps it makes are yours: the licence covers the code, not its output.
 - **Licenses:** the Marigold V2 code is Apache-2.0. Check the terms of the weights and the Qwen-Image-Edit base model before any commercial use or redistribution.
