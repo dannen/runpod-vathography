@@ -8,10 +8,13 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 - **ComfyUI v0.41.3 + torch 2.11.0+cu130.** Marigold V2 is native from v0.36.0 (Comfy-Org/ComfyUI#16232). cu130 is required for comfy-kitchen's CUDA backend, which runs the int8_convrot backbone (`comfy/quant_ops.py` disables it below CUDA 13). Pods on this (cu130) image are restricted to CUDA 13.0 hosts via `allowedCudaVersions`. comfy-kitchen's kernels need compute capability ≥ 8.0 (Ampere or newer).
 - **cu128 variant (2026-10-20):** CUDA 13 hosts are scarce, so the image also builds against CUDA 12.8 (`BASE_IMAGE`/`CUDA_TAG`, tag suffix `-cu128`). The int8 backbone then runs on comfy-kitchen's eager (plain PyTorch) backend; depth maps match the cu130 build's within ~1%. `create-pod.py` accepts 12.8–13.0 hosts for `*-cu128` tags; cheap GPUs often pass no CUDA filter at all yet run it fine, so the last pod used `--allowed-cuda-versions ""`.
 - **Local runs (2026-10-20):** the cu128 image runs on a 16GB card (`run-local.sh`): ComfyUI's dynamic VRAM loading holds part of the 20GB backbone in system RAM. ~24 s at 2496 px on an RTX 4060 Ti. No GGUF needed (`plan.md` Phase 2).
-- **R2 as a model source (2026-10-20):** RunPod's S3 gateway can't put the 20.5GB backbone on a 30GB volume (`QuotaExceeded` counts parts plus the object), and `MODELS_S3` puts an all-volumes key on a pod. A private Cloudflare R2 bucket with a read-only token avoids both; tooling outside this repo fills volumes from it (README "Workaround"). Booting a pod straight from R2 is `plan.md` Phase 3, not built.
-- **One custom node, ours:** `custom_nodes/vathography` (Vathography Output Name) names outputs after the photo. No third-party nodes (`vathography.md` §7 warns against community Marigold nodes).
-- **Volume contents: depth, normals and albedo** (all three Marigold V2 predictions), about 26.4GB. Only depth/Log-stage2 is packaged for ComfyUI.
-- **`vathography_*.json` is generated, never hand-edited.** `make_workflows.py` builds them from the untouched official templates:
+- **R2 as a model source (2026-10-20):** RunPod's S3 gateway can't put the 20.5GB backbone on a 30GB volume (`QuotaExceeded` counts parts plus the object), and `MODELS_S3` puts an all-volumes key on a pod. A private Cloudflare R2 bucket with a read-only token avoids both; tooling outside this repo fills volumes from it (README "Workaround"). Since 2026-10-28 the bucket also holds the see-through set (13 files, 37.2 GiB). Booting a pod straight from R2 is `plan.md` Phase 3, not built.
+- **Custom nodes: ours only** (`custom_nodes/vathography`): Vathography Output Name names outputs after the photo; Vathography Tiled Depth (`tiled.py`) and the Vathography See-through Model loader (`see_through.py`) were written from scratch on 2026-10-28 for feature parity with the practice's own AGPL node pack, which was read but deliberately not used (the owner wants nothing from its code, and independence from the Blender add-on's needs). No third-party nodes (`vathography.md` §7 warns against community Marigold nodes).
+- **Tiled depth design:** a global pass at up to 2496 px (Phase 1's best whole-photo size), never enlarged; 2048 px full-resolution tiles overlapping ≥512 px; a side shorter than a tile gets shorter tiles, so nothing is ever padded; each tile matched to the global map by a whole-tile Huber scale-and-offset fit, raised-cosine blending, and shapes above `detail_sigma` = 64 global-pass px taken from the global map. Modes full and draft (global only). Tried and rejected: a locally varying (guided-filter) fit (a seam and fringe shifts), split 4 (rings round fish a tile placed at another depth). `VATHOGRAPHY_TILED_DUMP=<dir>` saves raw predictions so merges can be retuned offline.
+- **See-through model:** the nf4 Qwen-Image-Edit-2509 backbone (settings from its safetensors metadata, `unet_config`) dequantised per layer by bitsandbytes 0.48.2 (in the Dockerfile), its LoRA added unmerged; plain `ModelPatcher`, so it sits fully in VRAM (11.2GB).
+- **Volume contents: depth, normals and albedo** (all three Marigold V2 predictions), about 26.4GB, plus the optional see-through set (13.5GB, `models-see-through.txt`, downloaded only with `MODEL_SETS=see-through`), which needs a 45GB volume. Only depth/Log-stage2 is packaged for ComfyUI by Comfy-Org.
+- **Licence:** GPL-3.0-or-later (2026-10-28), like ComfyUI, whose modules the nodes import, and vathopy.
+- **`vathography_*.json` is generated, never hand-edited.** `make_workflows.py` builds `vathography_depth_tiled.json` / `_see_through.json` from scratch, and the other three from the untouched official templates:
   - Resize by long edge in pixels (sizes are always given in pixels, never megapixels; default 2496 since 2026-10-18, was 1280), each side rounded to the nearest multiple of 16 (PrimitiveInt + GetImageSize + two ComfyMathExpression + ImageScale, no crop). That avoids the VAE's 8 px center crop and the DiT's circular padding, so the map is exactly the scaled photo's size.
   - 32-bit float EXR save, named `<photo>_<prediction>_00001.exr` by our node.
   - A Result preview node; Image Compare removed (it looked blank); every main-canvas node pinned.
@@ -25,24 +28,24 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 - **Untrusted files:** vathopy reads palettes and depth maps as data only and checks them before decoding (header-first size caps, regular files only, no pickles). That matters here because whatever reaches ComfyUI (uploads, any workflow's saves) lands in the folder the GUI reads, and ComfyUI's proxy URL is public; it's password-protected since 2026-10-18 (below), but the checks don't rely on that.
 - **ComfyUI is behind the same password** (2026-10-18): it has no login of its own, so `start.sh` runs nginx on 8188 (basic auth from `COMFYUI_AUTH`, default `VATHOPY_GUI_AUTH`; websockets passed through) in front of ComfyUI on `127.0.0.1:8189`. No password: open with a warning; nginx failing: ComfyUI stays local-only (fail closed). `batch.py`/`pull.py`/`bench.py` send it via `podauth.py` (env or `~/.api/runpod/vathopy-gui.auth`), to `*.proxy.runpod.net` only.
 - **Password on the GUI:** RunPod's proxy URLs are public. `VATHOPY_GUI_AUTH` (user:password) comes from the pod env; keep the credentials in a local file outside the repo (mode 600; `build.md` uses `~/.api/runpod/vathopy-gui.auth`). `create-pod.sh --update` replaces the whole env, so **always pass `--env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"`** (see `build.md`).
-- `models.txt` is the only list of models (`start.sh` and `populate-volume.sh` both read it).
+- `models.txt` is the only list of the standard models (`start.sh` and `populate-volume.sh` both read it); optional sets are `models-<set>.txt`, which only `start.sh` reads, for each set in `MODEL_SETS`.
 
-## Current state (2026-10-21)
+## Current state (2026-10-28)
 
 - **No pod.**
   - **Last pod:** an A40 48GB in CA-MTL-1 ($0.59/hr) on the cu128 image `be6dda3-d52f5b4-cu128`, with a 50GB pod volume (no network volume in that datacenter), created with `--allowed-cuda-versions ""`. Verified: 401/200 on 8188 and 8770; 2496 px depth jobs ~13 s including upload; maps within ~0.5–0.9% of local runs. Deleted 2026-10-20; its pod volume went with it.
   - **Before that:** the L40S pod in US-MO-1 was deleted on 2026-10-19 after RunPod reported a critical error on its host, and no L40S was free to recreate it.
 - **Images** (Docker Hub, `YOUR_DOCKERHUB_USER/vathography-comfyui`):
-  - Newest: `661c279-23f3c65` (cu130, = `latest`) and `661c279-23f3c65-cu128` (= `latest-cu128`), with vathopy `23f3c65`: shape focuses, the deletion slab, STL export, orientation, magnifier, settings in saved PNGs, 65 palettes. Built and pushed 2026-10-21. The cu128 one runs locally; **neither has run on a pod yet**: check 401/200 on both ports and the GUI's new sections on the next pod.
-  - Verified earlier: `be6dda3-d52f5b4-cu128` (above); `061a155` (cu130, 2026-10-18). Never run: `621c97b`, `2363fa3`.
-- **Volumes**, 30GB each (`--volume-size`; models 26.38GB), named `vathography-storage-<dc suffix>`:
+  - Newest: `3a869d4-bf51844` (cu130, = `latest`) and `3a869d4-bf51844-cu128` (= `latest-cu128`), built and pushed 2026-10-28: the tiled depth and see-through nodes, bitsandbytes, both new workflows, and vathopy `bf51844` (add-on 1.0.96 colours and blend modes, local contrast, Duplicate). A local cu128 test build of the same code ran both workflows through the frontend and batch full/draft jobs; **neither has run on a pod yet**.
+  - Before that: `fd3a831-ee7556c` (+`-cu128`), 2026-10-21. Verified on pods: `f600688-6374357-cu128` (RTX PRO 6000 MIG, US-NE-1, 2026-10-21), `be6dda3-d52f5b4-cu128` (above), `061a155` (cu130, 2026-10-18). Never run: `621c97b`, `2363fa3`.
+- **Volumes**, 30GB each (`--volume-size`; models 26.38GB) except US-NE-1, named `vathography-storage-<dc suffix>`:
   - US-MO-1: seeded, by server-side `copy-object` from the original 50GB volume (since deleted with its old outputs and favorites).
-  - US-NE-1: seeded by `copy-volume.py` (CPU pod). Has RTX PRO 6000 MIG 24/48GB, not yet seen with CUDA 13.
+  - US-NE-1: seeded by `copy-volume.py` (CPU pod); **grown to 45GB on 2026-10-28 and given the see-through set** from R2 (all 13 files = Hugging Face's SHA-256). The one volume for see-through pods (`--env MODEL_SETS=see-through`). Has RTX PRO 6000 MIG 24/48GB, which ran the cu128 image on 2026-10-21.
   - US-IL-1: seeded from R2 on 2026-10-20 (a GPU pod, 112 s, every file = Hugging Face's SHA-256). Two earlier US-IL-1 volumes, which `copy-volume.py --push` couldn't fill, were deleted.
   - `create-pod.sh` takes comma lists for `--datacenter` and `--gpu-type-id` and tries them in order, finding each datacenter's volume by `--volume-name` prefix (GraphQL fallback where REST rejects the datacenter).
 - **Region:** North America only for now (owner's choice, 2026-10-19).
 - **Local tools:**
-  - `batch.sh DIR`: resizes locally (`--resize 2496|4200`, default 2496, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`.
+  - `batch.sh DIR`: resizes locally (`--resize 2496|4200`, default 2496, sides snapped to ×16), uploads (proxy or `--via-s3`), queues grouped by prediction, waits, then runs `pull.sh`. `--predictions depth-tiled depth-see-through` upload the photo at its own size for the tiled node; `--draft` runs only its global pass.
   - `pull.sh`: finds the running pod (cached 30 min) and downloads results to `~/Pictures/vathography/depth/`, plus the GUI's `favorites/` saves to `~/Pictures/vathography/favorites/` and its crops. Verified against the volume's S3 checksums (MD5, SHA-256), falls back to S3 if the pod can't deliver, never overwrites (`-001`), keeps MD5-aware records (ComfyUI reuses names after deletions). Also `--from-volume`, `--match`, `--verify-existing`, `--clear-volume`, `--clear-inputs`.
   - `bench.py`: time and peak VRAM per size.
   - `run-local.sh`: the image on this machine's GPU, folders and ports from `--config` (relative paths relative to the file, so a project folder can carry its own config) or `~/.config/vathography/run-local.conf`.
@@ -55,7 +58,7 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 
 ## Open items
 
-1. Run the newest image on a pod and check it (password 401/200 on 8188 and 8770; the GUI's Cut, 3D print and shape controls; an STL download through the proxy).
+1. Run the newest image on a pod and check it: password 401/200 on 8188 and 8770; the tiled and see-through workflows (see-through on the US-NE-1 volume with `MODEL_SETS=see-through`); `batch.sh --predictions depth-tiled` end to end, including `pull.sh`'s names; the GUI's newer controls.
 2. Consider making `--allowed-cuda-versions ""` the default for `*-cu128` tags (every cheap GPU failed the 12.8+ filter but ran the image).
 3. R2 in `start.sh` (`MODELS_SOURCE=r2`), `plan.md` Phase 3, so a pod in any datacenter boots from the bucket.
 4. Serverless depth endpoint, `plan.md` Phase 1 (not started; the owner: later).
@@ -63,6 +66,16 @@ For an AI agent picking up this repo. `README.md` is the runbook. This file reco
 6. Optional: a 24GB card (A5000) for pods; README "GPU and VRAM" has the order. With the cu128 image the CUDA 13 constraint that blocked it is gone.
 7. The 1280/2500/3750 comparison on a sharp, full-size digital original (only a film scan and reduced copies so far).
 8. Whether to add the reference pipeline (Uniform-base, Disparity-base, INT8 vs 4-bit), per `vathography.md` §14.4.
+9. The tiled node's out-of-memory retry has never triggered; test it on a 16GB card with see-through at full size.
+10. Video depth (the add-on's video support is in progress upstream): per-frame depth with temporal consistency, then vathopy per frame. Not started.
+
+## Tiled and see-through findings (2026-10-27/28, RTX 4060 Ti 16GB, local ComfyUI v0.41.3 cu128)
+
+- **5616 × 3712 film scan:** 12 tiles in 5 min 18 s (the plain 2496 px workflow: 26 s). Edges and fine structure much crisper than the plain map, flat areas smooth, no seams at 6 fringe cycles. 2496 px tiles gave nearly the same map (r = 0.999) in 4 min 24 s. For comparison only, the AGPL pack took 6 min 2 s (20 tiles) and left a grain-like texture on flat areas.
+- **5616 × 1200 strip (panorama case):** 4 tiles of 2048 × 1200, 64 s, sharp, nothing at the top or bottom edges.
+- **See-through:** on glass facades and aquarium tanks, the base model stops at the glass while the see-through model shows the structure, rooms or fish behind it. Ours agrees with the pack's map at r = 0.99.
+- **6048 × 4024 dark aquarium, see-through:** 12 tiles in 4 min 36 s; the draft (24 s) is nearly as good there, since tiles see mostly water and noise. The split of 4 global-pass px left rings round fish; 64 doesn't (re-merged offline from the dump).
+- **Memory:** the see-through model sits fully in VRAM (11.2GB); a 2000 × 2496 global pass once ran out of memory on the 16GB card right after another job, then ran in a fresh process.
 
 ## Phase 1 findings (2026-10-18, L40S 48GB in US-MO-1, `bench.py`)
 

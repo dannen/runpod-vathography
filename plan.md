@@ -22,12 +22,14 @@ or leave idle. The vathopy GUI stays local (it already reads the depth folder).
 - **Handler.** Wrap the workflow in a serverless handler, based on
   [worker-comfyui](https://github.com/runpod-workers/worker-comfyui).
   Input: a photo plus options (prediction type, long-edge pixels, default
-  2496). Output: the S3 key(s) of the EXR(s).
+  2496; or `depth-tiled` / `depth-see-through`, which take the photo at its own
+  size, and draft). Output: the S3 key(s) of the EXR(s).
 - **Volume path.** Serverless mounts the volume at `/runpod-volume`, not
   `/workspace`. Point ComfyUI's model paths there (`extra_model_paths.yaml`
   or an env var `start.sh` already reads).
 - **Input transfer.** Photos at 2496 px long edge fit in the job payload as
-  base64. Larger ones (panoramas) go to the volume via its S3 gateway first,
+  base64. Larger ones (panoramas, and every tiled job, which takes the photo at
+  its own size) go to the volume via its S3 gateway first,
   and the job gets the key.
 - **Output transfer.** A 2496 px float EXR is ~16 MB or more, over the job
   result limit. RunPod drops oversized `output` **without an error** (the job
@@ -93,11 +95,14 @@ remain an option for cards under 16 GB or machines with little RAM.
 
 # Phase 3: Cloudflare R2 as a model source
 
-Status: **the R2 side is proven, not yet in the image.** The models are in a
-private R2 bucket, and separate tooling (outside this repo) fills a RunPod
-network volume from it with a throwaway pod. A new US-IL-1 volume filled that
-way in 112 s, every file matching Hugging Face's SHA-256. What's left is the
-pod image: booting a pod straight from R2.
+Status: **the R2 side is proven, not yet in this image.** The models are in a
+private R2 bucket (since 2026-10-28 including the see-through set), and
+[comfyui-runpod](https://github.com/dannen/comfyui-runpod)'s `tools/fill-volume.py`
+fills a RunPod network volume from it with a throwaway pod. A new US-IL-1 volume
+filled that way in 112 s, and the US-NE-1 volume got the see-through set the same
+way, every file matching Hugging Face's SHA-256. comfyui-runpod's `start.sh`
+also boots a pod straight from R2 (`MODELS_SOURCE=r2`, with SHA-256 checks), much
+as designed below; moving this repo onto that baseline would bring it here.
 
 ## Why
 
@@ -124,7 +129,8 @@ pod image: booting a pod straight from R2.
   checksum or download is retried from the next.
 - **R2 settings from the env, no names in this repo:** `R2_ACCOUNT_ID`,
   `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (a read-only, bucket-scoped
-  token), `R2_BUCKET`, `R2_PREFIX` (default `models`). `create-pod.py` gets
+  token), `R2_BUCKET`, `R2_PREFIX` (this project's files are under
+  `marigold-v2/models`). `create-pod.py` gets
   `--models-r2 ENV_FILE` to pass them from a local file; the README says how to
   make the bucket and token, generically.
 - **rclone in the image, pinned** (version and SHA-256 checked at build), not

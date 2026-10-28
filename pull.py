@@ -33,7 +33,9 @@ After that, or as soon as the cached pod stops answering, it's looked up
 again. --url skips the lookup entirely.
 
 Results: every successful job in the pod's ComfyUI history with an EXR
-output. Each is saved as <photo>_<prediction>_<long edge>px.exr, plus
+output. Each is saved as <photo>_<prediction>_<long edge>px.exr (prediction:
+depth, normals, albedo, or depth-tiled / depth-see-through [-draft] for jobs
+run with Vathography Tiled Depth), plus
 <same>_preview.png when the job has a Result preview (workflows from 7c5080c
 on; previews live in ComfyUI's temp folder, which a restart clears). Runs
 made by bench.py (prefix vathography/bench_) are skipped unless
@@ -214,6 +216,10 @@ def jobs(url, include_bench):
         graph = entry["prompt"][2]
         photos = [n["inputs"].get("image") for n in graph.values() if n.get("class_type") == "LoadImage"]
         preds = [n["inputs"].get("prediction") for n in graph.values() if n.get("class_type") == "MarigoldV2PostProcess"]
+        tiled = [n["inputs"] for n in graph.values() if n.get("class_type") == "VathographyTiledDepth"]
+        if tiled:                                  # our tiled node: depth-tiled / depth-see-through [-draft], as batch.py names them
+            see = any(n.get("class_type") == "VathographySeeThroughModel" for n in graph.values())
+            preds = [("depth-see-through" if see else "depth-tiled") + ("-draft" if tiled[0].get("mode") == "draft" else "")]
         exrs, previews = [], []
         for out in entry.get("outputs", {}).values():
             for files in out.values():

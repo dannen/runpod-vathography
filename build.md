@@ -39,7 +39,7 @@ To copy the models from a seeded network volume instead of Hugging Face (any dat
 Quick check without a GPU (import-level only):
 ```bash
 docker run --rm --entrypoint ./venv/bin/python YOUR_DOCKERHUB_USER/vathography-comfyui:latest \
-  -c "import torch, comfy_extras.nodes_marigold; print(torch.__version__)"
+  -c "import torch, bitsandbytes.functional, comfy_extras.nodes_marigold; print(torch.__version__)"
 ```
 
 ## Rolling out to a running pod
@@ -51,7 +51,7 @@ Point the pod at the new **git-sha tag**, not `:latest`:
   --env "VATHOPY_GUI_AUTH=$(cat ~/.api/runpod/vathopy-gui.auth)"
 ```
 
-**Always pass `--env VATHOPY_GUI_AUTH=...`:** `--update` replaces the pod's whole env list, so leaving it out would bring the vathopy GUI **and ComfyUI** back up with no password on a public URL.
+**Always pass `--env VATHOPY_GUI_AUTH=...`:** `--update` replaces the pod's whole env list, so leaving it out would bring the vathopy GUI **and ComfyUI** back up with no password on a public URL. The same goes for any other variable the pod had, e.g. `--env MODEL_SETS=see-through` on a pod that uses the see-through model (its volume needs 45GB; see the README's "Tiled and see-through depth").
 
 Why not `:latest`: RunPod has been seen restarting workers on the image they already had after a new `:latest` was pushed. Changing the image reference forces a fresh pull.
 
