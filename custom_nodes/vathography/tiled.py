@@ -37,7 +37,9 @@ SIGMAS = (0.5, 0.0)
 CLAMP_EPS = 0.002        # decoded values within this of 0 or 1 hit the VAE's clamp: left out of the fit
 FIT_MARGIN = 1 / 16      # each tile's border strip left out of the fit (the model is least sure there)
 FIT_STEP = 4             # fit on every 4th pixel each way: plenty, and fast
-DETAIL_SIGMA = 4.0       # large-scale shape from the global map below ~this many global pixels
+DETAIL_SIGMA = 64.0      # shapes larger than ~this many global pixels come from the global map, smaller from
+                         # the tiles. Small values (4) leave rings round things a tile places at another depth
+                         # than the global pass (fish in a dark aquarium); 64 doesn't, and shows no seams.
 
 
 def say(*a):
@@ -81,7 +83,22 @@ def plan(w, h, tile, overlap, global_long_edge):
 
 def predict(model, vae, conditioning, image):
     """One Marigold V2 depth prediction: image [1, h, w, 3] (0-1, h and w multiples of 16) ->
-    [h, w] float32 on the CPU, the decoded channel mean (low = near)."""
+    [h, w] float32 on the CPU, the decoded channel mean (low = near). Out of GPU memory, it frees
+    ComfyUI's cache and tries once more (memory left over from the previous job is the usual cause)."""
+    try:
+        return _predict(model, vae, conditioning, image)
+    except comfy.model_management.OOM_EXCEPTION:
+        say(f"[vathography tiled] out of GPU memory at {image.shape[2]}x{image.shape[1]}: freeing the cache, trying again")
+        comfy.model_management.soft_empty_cache(True)
+        try:
+            return _predict(model, vae, conditioning, image)
+        except comfy.model_management.OOM_EXCEPTION as e:
+            comfy.model_management.soft_empty_cache(True)
+            raise RuntimeError(f"out of GPU memory on a {image.shape[2]}x{image.shape[1]} pass. Lower global_long_edge "
+                               f"(and tile) on this node, or use a GPU with more memory") from e
+
+
+def _predict(model, vae, conditioning, image):
     latent = nodes.VAEEncode().encode(vae, image)[0]
     guider = Guider_Basic(model)
     guider.set_conds(conditioning)

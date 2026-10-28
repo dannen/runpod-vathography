@@ -297,7 +297,7 @@ TILED = {
     "vathography_depth_tiled.json": ("depth-tiled", False),
     "vathography_depth_see_through.json": ("depth-see-through", True),
 }
-TILED_DEFAULTS = ["full", 2048, 512, 2496, 4.0]   # mode, tile, overlap, global_long_edge, detail_sigma (tiled.py)
+TILED_DEFAULTS = ["full", 2048, 512, 2496, 64.0]   # mode, tile, overlap, global_long_edge, detail_sigma (tiled.py)
 
 
 def build_tiled(suffix: str, see_through: bool, name: str) -> dict:

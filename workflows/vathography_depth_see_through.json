@@ -242,7 +242,7 @@
         2048,
         512,
         2496,
-        4.0
+        64.0
       ],
       "title": "Tiled depth (full = global + tiles, draft = global only)"
     },
