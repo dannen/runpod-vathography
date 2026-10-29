@@ -5,6 +5,7 @@ results with pull.py (checksum-verified).
 
     ./batch.sh ~/Pictures/some-folder                  # depth for every photo, 2496 px long edge
     ./batch.sh DIR --resize 4200                       # 4200 px long edge (panoramas)
+    ./batch.sh DIR --enlarge                           # small photos enlarged to 2496 px first
     ./batch.sh DIR --predictions depth normals albedo  # all three
     ./batch.sh DIR --predictions depth-tiled           # full-resolution tiled depth
     ./batch.sh DIR --predictions depth-see-through     # tiled, depth behind glass
@@ -18,10 +19,17 @@ Settings (from the Phase 1 tests in AGENTS.md):
     degraded by 3750); 4200 suits panoramas, where 2496 leaves too few pixels
     top to bottom (a 4.3:1 panorama at 2496 is 2496 x 576), so wide photos
     are flagged.
-    Photos smaller than the target are never enlarged. Each side is then
-    rounded to the nearest multiple of 16 (2496 at 3:2 -> 2496 x 1664), so
-    the model neither crops nor pads and the depth map is exactly the
-    uploaded size, covering the full frame.
+    Photos smaller than the target aren't enlarged unless --enlarge says so.
+    Each side is then rounded to the nearest multiple of 16 (2496 at 3:2 ->
+    2496 x 1664), so the model neither crops nor pads and the depth map is
+    exactly the uploaded size, covering the full frame.
+  - --enlarge: photos smaller than the target long edge are enlarged to it
+    (Lanczos) before upload. Marigold's edge blur is a fixed number of its
+    own pixels, so on a small photo (about 1400 px) it spreads wide: halos
+    round people and blobby fine detail. Enlarged, the same photo gave a map
+    without the halo and with fine detail as strands. Only for depth,
+    normals and albedo; the tiled predictions take the photo as it is (on a
+    photo smaller than a tile they didn't help).
   - The resize happens here, before upload (EXIF rotation applied, Lanczos,
     JPEG quality 95). Uploads are then a few MB instead of the original
     10-120 MB, which also stays under the 100 MB upload limit (Cloudflare
@@ -81,18 +89,21 @@ PREDICTION_ORDER = ["depth", "normals", "albedo", "depth-tiled", "depth-see-thro
 FULL_SIZE = ("depth-tiled", "depth-see-through")  # the tiled node takes the photo at its own size
 
 
-def plan_size(w, h, long_edge):
+def plan_size(w, h, long_edge, enlarge=False):
     """Target (w, h) for a long edge in px, each side rounded to the nearest
-    multiple of 16 (never above the photo's own size). Multiples of 16 avoid
-    the VAE's crop and the model's circular padding, so the depth map is
-    exactly this size and covers the full frame. The rounding stretches the
-    shape by at most 8 px per side, which scaling the map back undoes."""
-    scale = min(long_edge, max(w, h)) / max(w, h)
+    multiple of 16 (never above the photo's own size, or with `enlarge`, the
+    long edge). Multiples of 16 avoid the VAE's crop and the model's circular
+    padding, so the depth map is exactly this size and covers the full frame.
+    The rounding stretches the shape by at most 8 px per side, which scaling
+    the map back undoes."""
+    scale = (long_edge if enlarge else min(long_edge, max(w, h))) / max(w, h)
 
     def snap(v, limit):
         r = max(16, round(v / 16) * 16)
         return r if r <= limit else max(16, limit // 16 * 16)
 
+    if enlarge:
+        return snap(w * scale, long_edge), snap(h * scale, long_edge)
     return snap(w * scale, w), snap(h * scale, h)
 
 
@@ -197,6 +208,9 @@ def main():
     ap.add_argument("--resize", type=int, choices=RESIZE_CHOICES, default=2496,
                     help="Long edge in px for the uploads: 2496 (default, regular photos; the workflows' default "
                          "too) or 4200 (panoramas)")
+    ap.add_argument("--enlarge", action="store_true",
+                    help="Enlarge photos smaller than the long edge to it before upload (sharper depth edges on "
+                         "small photos; depth, normals and albedo only)")
     ap.add_argument("--draft", action="store_true",
                     help="depth-tiled / depth-see-through: the global pass alone, no tiles (a quick look; "
                          "saved as <photo>_<prediction>-draft_*.exr)")
@@ -231,7 +245,7 @@ def main():
         except Exception as e:
             print(f"  skip {f.name}: can't read it ({e})")
             continue
-        size = plan_size(w, h, args.resize)
+        size = plan_size(w, h, args.resize, args.enlarge)
         tag = lambda p: f"{p}-draft" if args.draft and p in FULL_SIZE else p
         todo = [p for p in preds if args.force or not list(out.glob(f"{f.stem}_{tag(p)}_*.exr"))]
         plan.append((f, (w, h), size, todo))
@@ -245,6 +259,8 @@ def main():
         flag = ""
         if args.resize < max(RESIZE_CHOICES) and max(w, h) / min(w, h) >= WIDE and max(w, h) > args.resize:
             flag, wide = "  (wide: --resize 4200 suits panoramas)", wide + 1
+        if tw > w and any(p not in FULL_SIZE for p in todo):
+            flag += "  (enlarged)"
         print(f"  {f.name:50s} {w} x {h}  ->  {tw} x {th}   {what}{flag}")
     if wide:
         print(f"{wide} wide photo(s) would run at only {args.resize} px across; consider --resize 4200 for those.")

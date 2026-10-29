@@ -326,6 +326,7 @@ Both are built from scratch by `make_workflows.py`.
 ```bash
 ./batch.sh ~/Pictures/some-folder                   # depth for every photo, 2496 px long edge
 ./batch.sh DIR --resize 4200                        # 4200 px long edge (panoramas)
+./batch.sh DIR --enlarge                            # small photos enlarged to the long edge first
 ./batch.sh DIR --predictions depth normals albedo   # all three
 ./batch.sh DIR --predictions depth-tiled            # tiled depth at the photo's own size
 ./batch.sh DIR --predictions depth-see-through      # tiled, depth behind glass (needs the see-through set)
@@ -336,7 +337,7 @@ Both are built from scratch by `make_workflows.py`.
 1. **Sizing:** `--resize 2496` (the default, matching the workflows) or `--resize 4200` sets the long edge in pixels, keeping the photo's shape.
    - **2496:** ~2500 gave the best depth on regular photos (depth degraded by 3750); 2496 is the nearest multiple of 16.
    - **4200:** for panoramas, since 2496 leaves too few pixels top to bottom (a 4.3:1 panorama at 2496 is 2496 × 576). With the default, wide photos (2:1 or wider) are flagged in the plan.
-   - **Small photos:** a photo smaller than the target is never enlarged.
+   - **Small photos:** a photo smaller than the target isn't enlarged, unless `--enlarge`: then it's enlarged to the long edge (Lanczos) before upload. The model's edge blur is a fixed number of its own pixels, so on a small photo (about 1400 px) it spreads wide, giving halos round people and blobby fine detail; enlarged first, the same photo gave a map without the halo. Plain predictions only; the tiled ones take the photo as it is.
    - **Tiled:** `depth-tiled` and `depth-see-through` upload the photo at its own size (upright, JPEG quality 95); `--resize` doesn't apply to them.
 2. **Preparing:** the photo is resized here, before upload (EXIF rotation applied, Lanczos, JPEG quality 95). Uploads are a few MB instead of 10–120 MB.
 3. **Uploading:** by default through ComfyUI's upload, via RunPod's web proxy. `--via-s3` writes each photo straight into the pod's volume (`input/batch-<time>/`) through RunPod's S3 gateway instead, and checks the MD5 the gateway reports against the local file. That avoids the proxy and its 100 MB limit. It needs the `aws` CLI and `~/.api/runpod/s3-credentials`, like `pull.sh`.
